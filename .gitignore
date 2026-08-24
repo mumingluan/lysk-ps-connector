@@ -1,0 +1,26 @@
+# Local SDK/JDK configuration
+local.properties
+.idea/
+*.iml
+
+# Gradle / Android outputs
+.gradle/
+**/build/
+dist/
+temp_build.log
+
+# Signing material
+*.jks
+*.keystore
+keystore.properties
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+*.swp
+
+# Generated runtime identities must never be committed
+**/tls_identity/
+*.key
+*.p12
+*.pfx

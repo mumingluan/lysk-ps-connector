@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">LYSK-PS</string>
+    <string name="xposed_desc">恋与深空私服对接：RSA 公钥替换 + 按应用/域名 VPN 代理与重定向</string>
+</resources>
