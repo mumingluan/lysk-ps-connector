@@ -7,11 +7,14 @@
 
 包名：`com.axuan.lyskps`  
 目标游戏：`com.papegames.lysk.cn`  
-最低系统：Android 6.0（API 23）
+最低系统：Android 7.0（API 24）
 
 ## 功能
 
 - LSPosed/LSPatch 主进程 Hook，延迟替换 `global-metadata.dat` 中的 RSA 公钥。
+- 关闭 RSA 开关时自动恢复官方公钥；模块主页通过 Shizuku 覆盖官方公钥，或删除 metadata 让游戏自行重新解包。
+- Shizuku 集成包含 `ShizukuProvider`，首次使用恢复功能前请启动 Shizuku 并在提示中授权本模块。
+- RSA 公钥块默认硬编码在 `Config.java`；首次注入游戏时会与 RSA 开关、偏移和延迟一起保存到游戏 prefs。启动悬浮设置框中的“RSA 设置”可修改私服公钥 Base64。
 - 只接管指定应用的 `VpnService`；包名可填 `*`，表示除 LYSK-PS 自身外的全部应用。
 - 域名规则同时匹配自身和子域名，未命中流量直接走系统网络。
 - HTTP 代理模式：命中域名使用配置的 HTTP 代理。
@@ -93,6 +96,8 @@ python tools/generate_icons.py
 - HTTP 上游代理不提供通用 UDP 转发；QUIC/HTTP3 可能回退 TCP，也可能失败。
 - 包装器关闭后，HTTPS 原始 TLS 只能重定向到真正支持 `https://` 的服务。
 - RSA metadata 偏移与客户端版本绑定；当前默认值为 `0x22aee2f` / `0x22af00f`。
+- 公钥替换会持久写入游戏外部目录的 `global-metadata.dat`；仅在 LSPosed 中禁用模块不会自动恢复文件。请使用游戏内“关闭 RSA”让模块先恢复；若模块已经禁用，则先启动并授权 Shizuku，在模块主页选择覆盖官方公钥块，或删除 `global-metadata.dat` 让游戏下次启动从原 APK 重新解包。
+- 若页面一直提示“Shizuku 未运行”，请确认安装的是 v1.7 或更高版本；旧版 APK 未打包 `ShizukuProvider`，无法初始化 Binder。
 - 包名从旧测试版 `cn.mingluan.lyskps` 改为 `com.axuan.lyskps`，旧版配置不会自动迁移。
 
 ## 安全问题

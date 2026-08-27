@@ -8,10 +8,10 @@ android {
 
     defaultConfig {
         applicationId = "com.axuan.lyskps"
-        minSdk = 23
+        minSdk = 24
         targetSdk = 28          // 低 target: 模块自身 UI 无存储/权限麻烦
-        versionCode = 6
-        versionName = "1.5"
+        versionCode = 8
+        versionName = "1.7"
     }
 
     buildTypes {
@@ -30,6 +30,10 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    buildFeatures {
+        aidl = true
     }
 
     packaging {
@@ -52,4 +56,6 @@ dependencies {
     // Xposed API 仅编译期需要, 运行时由 LSPosed 提供; 本地 jar 免依赖 api.xposed.info 仓库
     compileOnly(files("libs/xposed-api-82.jar"))
     implementation("org.bouncycastle:bcpkix-jdk18on:1.85")
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
 }

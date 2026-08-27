@@ -4,6 +4,7 @@ import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -20,6 +21,8 @@ import android.widget.*;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.Locale;
+import rikka.shizuku.Shizuku;
+import rikka.shizuku.ShizukuProvider;
 
 /** 深色 MD3 风格的模块配置、VPN 控制与实时日志页。 */
 @SuppressLint({"SetTextI18n","ClickableViewAccessibility"})
@@ -27,6 +30,7 @@ public class InfoActivity extends Activity {
     private static final int REQ_VPN = 1001;
     private static final int REQ_CA_CERT=2001,REQ_CA_KEY=2002,REQ_LEAF_CERT=2003,REQ_LEAF_KEY=2004;
     private static final int REQ_EXPORT_CRT=2101,REQ_EXPORT_HASH=2102;
+    private static final int REQ_SHIZUKU_RSA=3001;
     private static final int BG=0xff121318, SURFACE=0xff1e1f25, TEXT=0xffe6e1e5;
     private static final int MUTED=0xffcac4d0, PRIMARY=0xffd0bcff, ON_PRIMARY=0xff381e72, OUTLINE=0xff49454f;
     private SharedPreferences prefs;
@@ -35,7 +39,14 @@ public class InfoActivity extends Activity {
     private Switch tlsWrapper;
     private LinearLayout tlsIdentityPanel;
     private TextView state, logText, certStatus, protocolWarning;
+    private int pendingShizukuRsaMode;
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private final Shizuku.OnRequestPermissionResultListener shizukuPermissionListener = (requestCode, grantResult) -> {
+        if(requestCode!=REQ_SHIZUKU_RSA)return;
+        int mode=pendingShizukuRsaMode;pendingShizukuRsaMode=0;
+        if(grantResult==PackageManager.PERMISSION_GRANTED&&mode!=0)runShizukuRsaRestore(mode);
+        else Toast.makeText(this,"未授予 Shizuku 权限",Toast.LENGTH_LONG).show();
+    };
     private final Runnable refresh = new Runnable() {
         @Override public void run() {
             updateState();
@@ -47,13 +58,18 @@ public class InfoActivity extends Activity {
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // Provider 已在 manifest 中负责首次初始化；显式请求一次可兼容部分 OEM 的
+        // provider 延迟创建场景，随后再检查 Binder 是否就绪。
+        try { ShizukuProvider.requestBinderForNonProviderProcess(this); } catch (Throwable ignored) {}
+        Shizuku.addBinderReceivedListenerSticky(() -> runOnUiThread(this::updateShizukuState));
+        Shizuku.addRequestPermissionResultListener(shizukuPermissionListener);
         VpnLog.init(this);
         prefs=getSharedPreferences(VpnConfig.PREFS,0);
 
         LinearLayout root=new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL); root.setPadding(dp(18),dp(18),dp(18),dp(28)); root.setBackgroundColor(BG);
         TextView title=label("LYSK-PS",28,TEXT); title.setTypeface(null,Typeface.BOLD); root.addView(title);
-        root.addView(label("RSA + Selective VPN  ·  v1.5",13,PRIMARY));
+        root.addView(label("RSA + Selective VPN  ·  v1.7",13,PRIMARY));
         root.addView(label("要使用RSA替换功能，请在LSPosed启用此模块，或使用LSPatch将模块集成到游戏。",13,MUTED));
 
         root.addView(section("过滤范围"));
@@ -79,6 +95,10 @@ public class InfoActivity extends Activity {
         tlsIdentityPanel.addView(label("root 用户亦可将证书 .0 文件添加到系统 CA + Conscrypt APEX 中，但游戏默认信任用户证书，因此不必这么做。",12,PRIMARY));
         root.addView(tlsIdentityPanel);
         state=label("",13,PRIMARY);root.addView(state);
+        Button restoreOfficial=button("恢复官方 RSA（Shizuku）",false);
+        restoreOfficial.setOnClickListener(v->restoreOfficialRsa());
+        root.addView(restoreOfficial);
+        root.addView(label("即使在 LSPosed 中禁用模块，外部 metadata 里的私服公钥也不会自动消失。可通过 Shizuku 覆盖官方公钥，或删除 metadata 让游戏下次启动自行重新解包。",12,MUTED));
 
         LinearLayout actions=new LinearLayout(this);actions.setOrientation(LinearLayout.HORIZONTAL);
         Button start=button("保存并启动",true),stop=button("停止 VPN",false);
@@ -99,6 +119,42 @@ public class InfoActivity extends Activity {
     private boolean save(){try{VpnConfig.fromInput(modes.getCheckedRadioButtonId(),proxyEndpoint.getText().toString(),redirectEndpoint.getText().toString(),tlsWrapper.isChecked(),domains.getText().toString(),packages.getText().toString()).save(prefs);return true;}catch(Throwable e){Toast.makeText(this,e.getMessage()==null?"配置无效":e.getMessage(),Toast.LENGTH_LONG).show();return false;}}
     private void requestStart(){if(!save())return;Intent i=VpnService.prepare(this);if(i!=null)startActivityForResult(i,REQ_VPN);else startVpn();}
     @Override protected void onActivityResult(int requestCode,int resultCode,Intent data){super.onActivityResult(requestCode,resultCode,data);if(requestCode==REQ_VPN){if(resultCode==RESULT_OK)startVpn();else Toast.makeText(this,"未授予 VPN 权限",Toast.LENGTH_LONG).show();return;}if(resultCode!=RESULT_OK||data==null||data.getData()==null)return;if(requestCode==REQ_EXPORT_CRT||requestCode==REQ_EXPORT_HASH){new Thread(()->{try(OutputStream out=getContentResolver().openOutputStream(data.getData(),"w")){TlsIdentityStore store=TlsIdentityStore.get(this);out.write(requestCode==REQ_EXPORT_HASH?store.caPemBytes():store.caBytes());out.flush();runOnUiThread(()->Toast.makeText(this,"CA 证书已导出",Toast.LENGTH_LONG).show());}catch(Throwable e){runOnUiThread(()->Toast.makeText(this,"导出失败："+e.getMessage(),Toast.LENGTH_LONG).show());}},"lyskps-export").start();return;}int kind=requestCode==REQ_CA_CERT?TlsIdentityStore.CA_CERT:requestCode==REQ_CA_KEY?TlsIdentityStore.CA_KEY:requestCode==REQ_LEAF_CERT?TlsIdentityStore.LEAF_CERT:TlsIdentityStore.LEAF_KEY;new Thread(()->{try(InputStream in=getContentResolver().openInputStream(data.getData())){String result=TlsIdentityStore.get(this).importPart(kind,in);runOnUiThread(()->{LyskVpnService.stop(this);Toast.makeText(this,result+"；VPN 已停止，请重新启动",Toast.LENGTH_LONG).show();refreshIdentity();});}catch(Throwable e){runOnUiThread(()->Toast.makeText(this,"导入失败："+e.getMessage(),Toast.LENGTH_LONG).show());}},"lyskps-import").start();}
+    private void updateShizukuState(){
+        if(state!=null && !Shizuku.pingBinder()) state.setText("状态  ·  Shizuku 未连接");
+    }
+    private void restoreOfficialRsa(){
+        String[] actions={"覆盖两处官方公钥块（保留 metadata）","删除 global-metadata.dat（下次启动自动重建）"};
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("使用 Shizuku 恢复官方 RSA")
+                .setItems(actions,(d,which)->{
+                    int mode=which==0?OfficialRsaRestorer.MODE_RESTORE_BLOCKS:OfficialRsaRestorer.MODE_DELETE_METADATA;
+                    if(mode==OfficialRsaRestorer.MODE_DELETE_METADATA){
+                        new android.app.AlertDialog.Builder(this)
+                                .setTitle("删除 metadata？")
+                                .setMessage("将停止恋与深空并删除外部 global-metadata.dat。游戏下次启动时会从原 APK 重新解包，首次启动可能稍慢。")
+                                .setPositiveButton("删除并重建",(x,y)->requestShizukuRsaRestore(mode))
+                                .setNegativeButton("取消",null).show();
+                    }else requestShizukuRsaRestore(mode);
+                })
+                .setNegativeButton("取消",null)
+                .show();
+    }
+    private void requestShizukuRsaRestore(int mode){
+        try{
+            if(!Shizuku.pingBinder()){Toast.makeText(this,"正在连接 Shizuku，请稍候再试",Toast.LENGTH_LONG).show();try{ShizukuProvider.requestBinderForNonProviderProcess(this);}catch(Throwable ignored){}return;}
+            if(Shizuku.isPreV11()){Toast.makeText(this,"Shizuku 版本过旧，请升级",Toast.LENGTH_LONG).show();return;}
+            if(Shizuku.checkSelfPermission()==PackageManager.PERMISSION_GRANTED){runShizukuRsaRestore(mode);return;}
+            if(Shizuku.shouldShowRequestPermissionRationale()){Toast.makeText(this,"Shizuku 权限已被拒绝，请在 Shizuku 管理器中重新授权",Toast.LENGTH_LONG).show();return;}
+            pendingShizukuRsaMode=mode;
+            Shizuku.requestPermission(REQ_SHIZUKU_RSA);
+        }catch(Throwable e){Toast.makeText(this,"无法连接 Shizuku："+e.getMessage(),Toast.LENGTH_LONG).show();}
+    }
+    private void runShizukuRsaRestore(int mode){
+        LyskVpnService.stop(this);
+        String action=mode==OfficialRsaRestorer.MODE_DELETE_METADATA?"删除 metadata":"恢复官方公钥";
+        Toast.makeText(this,"正在通过 Shizuku "+action+"…",Toast.LENGTH_SHORT).show();
+        OfficialRsaRestorer.restore(this,mode,(ok,detail)->runOnUiThread(()->Toast.makeText(this,(ok?"完成：":"失败：")+detail,Toast.LENGTH_LONG).show()));
+    }
     private void startVpn(){VpnLog.i("UI","保存配置并启动 VPN");LyskVpnService.start(this);}
     private void updateState(){if(state!=null)state.setText("状态  ·  "+(LyskVpnService.isRunning()?"VPN 运行中":"已停止"));}
     private boolean isLogAtBottom(){if(logText==null||logText.getLayout()==null)return true;int content=logText.getLayout().getHeight()+logText.getPaddingTop()+logText.getPaddingBottom();return logText.getScrollY()+logText.getHeight()>=content-dp(12);}
@@ -109,6 +165,7 @@ public class InfoActivity extends Activity {
     private void regenerateIdentity(){new android.app.AlertDialog.Builder(this).setTitle("重新生成 TLS 身份？").setMessage("旧 CA 将立即失效，需要重新安装并信任新 CA。").setPositiveButton("重新生成",(d,w)->new Thread(()->{try{TlsIdentityStore.get(this).regenerate();runOnUiThread(()->{LyskVpnService.stop(this);refreshIdentity();Toast.makeText(this,"已生成并停止 VPN，请安装新的 CA",Toast.LENGTH_LONG).show();});}catch(Throwable e){runOnUiThread(()->Toast.makeText(this,"生成失败："+e.getMessage(),Toast.LENGTH_LONG).show());}},"lyskps-regenerate").start()).setNegativeButton("取消",null).show();}
     @Override protected void onResume(){super.onResume();handler.post(refresh);}
     @Override protected void onPause(){handler.removeCallbacks(refresh);super.onPause();}
+    @Override protected void onDestroy(){Shizuku.removeRequestPermissionResultListener(shizukuPermissionListener);super.onDestroy();}
 
     private RadioButton radio(String text,int id){RadioButton b=new RadioButton(this);b.setText(text);b.setTextColor(TEXT);b.setId(id);b.setButtonTintList(new ColorStateList(new int[][]{new int[]{android.R.attr.state_checked},new int[]{}},new int[]{PRIMARY,MUTED}));return b;}
     private EditText edit(boolean multiline){EditText e=new EditText(this);e.setSingleLine(!multiline);e.setTextColor(TEXT);e.setHintTextColor(0xff938f99);e.setBackground(round(SURFACE,14,OUTLINE));e.setPadding(dp(14),dp(10),dp(14),dp(10));LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.setMargins(0,dp(3),0,dp(12));e.setLayoutParams(lp);return e;}

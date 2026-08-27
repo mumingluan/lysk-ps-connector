@@ -125,6 +125,7 @@ public final class OverlayUi {
     }
 
     private static void showDialog(final Activity act, final SharedPreferences sp) {
+        Config.load(sp);
         Context c = new ContextThemeWrapper(act, android.R.style.Theme_Material_Dialog_Alert);
         LinearLayout root = new LinearLayout(c);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -138,11 +139,23 @@ public final class OverlayUi {
                 .setView(root)
                 .setPositiveButton("保存并重启游戏", (d, w) -> {
                     Config.rsaPatch = swRsa.isChecked();
-                    Config.edit(sp).apply();
-                    Toast.makeText(act, "已保存，即将重启游戏", Toast.LENGTH_SHORT).show();
-                    MAIN.postDelayed(() -> System.exit(0), 1200);
+                    if (!Config.edit(sp).commit()) {
+                        Toast.makeText(act, "配置写入失败，未执行 RSA 状态切换", Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    if (!Config.rsaPatch) {
+                        Toast.makeText(act, "正在恢复官方 RSA，完成后重启游戏", Toast.LENGTH_SHORT).show();
+                        RsaPatcher.restoreOfficial(act, (ok, status) -> MAIN.post(() -> {
+                            Toast.makeText(act, ok ? "官方 RSA 已恢复，即将重启游戏" : "官方 RSA 恢复失败：" + status,
+                                    Toast.LENGTH_LONG).show();
+                            if (ok) MAIN.postDelayed(() -> System.exit(0), 800L);
+                        }));
+                    } else {
+                        Toast.makeText(act, "已保存，即将重启游戏", Toast.LENGTH_SHORT).show();
+                        MAIN.postDelayed(() -> System.exit(0), 1200);
+                    }
                 })
-                .setNeutralButton("高级(RSA偏移)", (d, w) -> advancedDialog(act, sp))
+                .setNeutralButton("RSA 设置", (d, w) -> advancedDialog(act, sp))
                 .setNegativeButton("取消", null)
                 .create();
         dialog.setOnShowListener(x -> styleDialog(dialog));
@@ -156,40 +169,36 @@ public final class OverlayUi {
         root.setPadding(dp(act,20), dp(act,10), dp(act,20), 0);
 
         root.addView(label(c, "2048 位公钥偏移 (hex, 不带0x):"));
-        final EditText et1 = darkEdit(c);
-        et1.setSingleLine(true);
-        et1.setText(Config.off2048);
-        root.addView(et1);
-
+        final EditText et1 = darkEdit(c); et1.setSingleLine(true); et1.setText(Config.off2048); root.addView(et1);
         root.addView(label(c, "1024 位公钥偏移 (hex):"));
-        final EditText et2 = darkEdit(c);
-        et2.setSingleLine(true);
-        et2.setText(Config.off1024);
-        root.addView(et2);
-
-        root.addView(label(c, "补丁延迟毫秒 (须>4000, 躲启动校验):"));
-        final EditText et3 = darkEdit(c);
-        et3.setSingleLine(true);
-        et3.setText(String.valueOf(Config.patchDelayMs));
-        root.addView(et3);
+        final EditText et2 = darkEdit(c); et2.setSingleLine(true); et2.setText(Config.off1024); root.addView(et2);
+        root.addView(label(c, "补丁延迟毫秒 (须 4000–120000):"));
+        final EditText et3 = darkEdit(c); et3.setSingleLine(true); et3.setText(String.valueOf(Config.patchDelayMs)); root.addView(et3);
+        root.addView(label(c, "私服 2048 RSA 块 Base64（留空使用内置默认值）:"));
+        final EditText er1 = darkEdit(c); er1.setSingleLine(false); er1.setMinLines(2); er1.setText(Config.replace2048B64()); root.addView(er1);
+        root.addView(label(c, "私服 1024 RSA 块 Base64（留空使用内置默认值）:"));
+        final EditText er2 = darkEdit(c); er2.setSingleLine(false); er2.setMinLines(2); er2.setText(Config.replace1024B64()); root.addView(er2);
 
         AlertDialog dialog = new AlertDialog.Builder(c)
-                .setTitle("高级设置")
+                .setTitle("RSA 设置")
                 .setView(root)
                 .setPositiveButton("保存并重启游戏", (d, w) -> {
                     try {
                         long o1 = Config.parseHex(et1.getText().toString());
                         long o2 = Config.parseHex(et2.getText().toString());
                         int delay = Integer.parseInt(et3.getText().toString().trim());
-                        if (o1 < 0 || o2 < 0 || delay < 4000 || delay > 120000)
-                            throw new IllegalArgumentException("范围无效");
+                        String r1 = er1.getText().toString().trim();
+                        String r2 = er2.getText().toString().trim();
+                        if (o1 < 0 || o2 < 0 || delay < 4000 || delay > 120000) throw new IllegalArgumentException("范围无效");
+                        if (r1.isEmpty()) r1 = Config.replace2048B64();
+                        if (r2.isEmpty()) r2 = Config.replace1024B64();
                         Config.off2048 = et1.getText().toString().trim();
                         Config.off1024 = et2.getText().toString().trim();
                         Config.patchDelayMs = delay;
-                        Config.edit(sp).apply();
+                        Config.setRsaBlocks(sp, r1, r2);
+                        if (!Config.edit(sp).commit()) throw new IllegalStateException("配置写入失败");
                     } catch (Throwable ex) {
-                        Toast.makeText(act, "输入无效：偏移须为十六进制，延迟须为 4000–120000 ms",
-                                Toast.LENGTH_LONG).show();
+                        Toast.makeText(act, "输入无效：请检查偏移、延迟和 Base64 RSA 块", Toast.LENGTH_LONG).show();
                         MAIN.postDelayed(() -> advancedDialog(act, sp), 300);
                         return;
                     }
