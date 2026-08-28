@@ -12,7 +12,7 @@ import java.io.IOException;
 
 /** 按应用接管的 VPN；TUN 数据面使用 MIT 许可的 tun2proxy。 */
 public final class LyskVpnService extends VpnService {
-    private static final String TAG="LYSK-PS.VPN", START="com.axuan.lyskps.START", STOP="com.axuan.lyskps.STOP";
+    private static final String TAG="LYSK-PS-Connector.VPN", START="com.axuan.lyskps.START", STOP="com.axuan.lyskps.STOP";
     private static volatile boolean running;
     private ParcelFileDescriptor tun;
     private SelectiveProxyServer localProxy;
@@ -26,10 +26,10 @@ public final class LyskVpnService extends VpnService {
     private synchronized void boot(){if(running)return;try{
         VpnConfig config=VpnConfig.load(getSharedPreferences(VpnConfig.PREFS,0));
         localProxy=new SelectiveProxyServer(this,config);localProxy.start();
-        Builder b=new Builder().setSession("LYSK-PS").setMtu(1500).addAddress("10.55.0.2",30).addRoute("0.0.0.0",0).addDnsServer("198.18.0.1");
+        Builder b=new Builder().setSession("LYSK-PS-Connector").setMtu(1500).addAddress("10.55.0.2",30).addRoute("0.0.0.0",0).addDnsServer("198.18.0.1");
         b.addAddress("fd55:6c79:736b::2",126).addRoute("::",0);
         int allowed=0;StringBuilder missing=new StringBuilder();
-        if(config.packages.contains("*")){b.addDisallowedApplication(getPackageName());allowed=1;VpnLog.i("VPN","作用范围：全部应用（排除模块自身）");}
+        if(config.packages.contains("*")){b.addDisallowedApplication(getPackageName());allowed=1;VpnLog.i("VPN","作用范围：全部应用（排除客户端自身）");}
         else for(String pkg:config.packages){if(getPackageName().equals(pkg))continue;try{b.addAllowedApplication(pkg);allowed++;VpnLog.i("VPN","允许应用："+pkg);}catch(PackageManager.NameNotFoundException e){if(missing.length()>0)missing.append(", ");missing.append(pkg);}}
         if(allowed==0)throw new IllegalArgumentException("没有找到任何已安装的作用包："+missing);
         if(Build.VERSION.SDK_INT>=29)b.setMetered(false);
@@ -38,8 +38,8 @@ public final class LyskVpnService extends VpnService {
         nativeThread=new Thread(()->{String args="tun2proxy --tun-fd "+fd+" --close-fd-on-drop false --proxy http://127.0.0.1:"+port+" --dns virtual --dns-addr 1.1.1.1 --ipv6-enabled --verbosity info";int rc=Tun2proxy.run(args,(char)1500);Log.i(TAG,"tun2proxy exited rc="+rc);if(running){shutdown();stopSelf();}},"lyskps-tun2proxy");nativeThread.start();
     }catch(Throwable t){Log.e(TAG,"start failed",t);VpnLog.i("ERROR","VPN 启动失败："+t);getSharedPreferences(VpnConfig.PREFS,0).edit().putString("last_error",String.valueOf(t.getMessage())).apply();new Handler(Looper.getMainLooper()).post(()->Toast.makeText(this,"VPN 启动失败："+t.getMessage(),Toast.LENGTH_LONG).show());shutdown();stopSelf();}}
 
-    private void startForegroundNow(String text){String channel="lyskps_vpn";NotificationManager nm=(NotificationManager)getSystemService(NOTIFICATION_SERVICE);Notification.Builder nb;if(Build.VERSION.SDK_INT>=26){nm.createNotificationChannel(new NotificationChannel(channel,"LYSK-PS VPN",NotificationManager.IMPORTANCE_LOW));nb=new Notification.Builder(this,channel);}else nb=new Notification.Builder(this);PendingIntent pi=PendingIntent.getActivity(this,0,new Intent(this,InfoActivity.class),PendingIntent.FLAG_IMMUTABLE);Notification n=nb.setSmallIcon(android.R.drawable.stat_sys_upload).setContentTitle("LYSK-PS VPN").setContentText(text).setContentIntent(pi).setOngoing(true).build();startForeground(13001,n);}
-    private synchronized void shutdown(){running=false;ParcelFileDescriptor oldTun=tun;tun=null;if(oldTun!=null)try{oldTun.close();}catch(IOException ignored){}if(localProxy!=null){localProxy.close();localProxy=null;}Thread worker=nativeThread;if(worker!=null&&worker!=Thread.currentThread())try{worker.join(1500);}catch(InterruptedException e){Thread.currentThread().interrupt();}nativeThread=null;if(Build.VERSION.SDK_INT>=24)stopForeground(STOP_FOREGROUND_REMOVE);else stopForeground(true);}
+    private void startForegroundNow(String text){String channel="lyskps_vpn";NotificationManager nm=(NotificationManager)getSystemService(NOTIFICATION_SERVICE);Notification.Builder nb;if(Build.VERSION.SDK_INT>=26){nm.createNotificationChannel(new NotificationChannel(channel,"LYSK-PS-Connector VPN",NotificationManager.IMPORTANCE_LOW));nb=new Notification.Builder(this,channel);}else nb=new Notification.Builder(this);PendingIntent pi=PendingIntent.getActivity(this,0,new Intent(this,InfoActivity.class),PendingIntent.FLAG_IMMUTABLE);Notification n=nb.setSmallIcon(android.R.drawable.stat_sys_upload).setContentTitle("LYSK-PS-Connector VPN").setContentText(text).setContentIntent(pi).setOngoing(true).build();startForeground(13001,n);}
+    private synchronized void shutdown(){running=false;ParcelFileDescriptor oldTun=tun;tun=null;if(oldTun!=null)try{oldTun.close();}catch(IOException ignored){}if(localProxy!=null){localProxy.close();localProxy=null;}Thread worker=nativeThread;if(worker!=null&&worker!=Thread.currentThread())try{worker.join(1500);}catch(InterruptedException e){Thread.currentThread().interrupt();}nativeThread=null;stopForeground(STOP_FOREGROUND_REMOVE);}
     @Override public void onRevoke(){shutdown();stopSelf();super.onRevoke();}
     @Override public void onDestroy(){shutdown();super.onDestroy();}
 }

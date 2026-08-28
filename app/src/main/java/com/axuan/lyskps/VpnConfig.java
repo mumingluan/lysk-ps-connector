@@ -4,7 +4,7 @@ import android.content.SharedPreferences;
 import java.net.URI;
 import java.util.*;
 
-/** 独立于游戏进程 RSA prefs 的模块 VPN 配置。 */
+/** 客户端 VPN 配置。 */
 public final class VpnConfig {
     public static final String PREFS = "lysk_vpn_config";
     public static final int MODE_PROXY = 101, MODE_REDIRECT = 102;

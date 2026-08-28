@@ -3,18 +3,12 @@ package com.axuan.lyskps;
 import android.content.SharedPreferences;
 import android.util.Base64;
 
-/**
- * 模块配置。存储在游戏进程自己的 SharedPreferences 里。
- * RSA 数据使用代码内置默认值，并在首次启动时持久化到 prefs，避免补丁时依赖
- * 游戏进程中偶发不可用的模块 assets / createPackageContext。
- */
+/** Shizuku 文件操作使用的 RSA 配置，存储在客户端 SharedPreferences 中。 */
 public final class Config {
     public static final String PREFS = "lysk_ps_config";
 
-    public static volatile boolean rsaPatch = true;
     public static volatile String off2048 = "22aee2f";
     public static volatile String off1024 = "22af00f";
-    public static volatile int patchDelayMs = 6000;
 
     // 默认 RSA 块：Base64 只用于避免 Java 源文件中的 XML/换行破坏字符串。
     private static final String DEFAULT_REPLACE_2048 = "PFJTQUtleVZhbHVlPjxSU0FLZXlWYWx1ZT48TW9kdWx1cz4KICAgICAgICAgICAgdnQ2VW56NCt3S0dnY1ppTVl6Y3A4dFJRRzR3emRXQVdPQVZTRm9zK3VtdXdMZlVuWmtkVDNpaitSbHk2N2FkOWs2dGlPZ2JxZGljUEhKZVgzcmZaMUVPNXNibTdxajRIZzg3Qko3ZC9nNFdVTVhQanMxanIvT0JJYmpWaUw3U1dnKzRUYklaWk1zRFRWdWVyVTBzeGtnaVFmZUR5N3NOWWtECiAgICAgICAgICAgIDZpSkZSTDB3M1dyemxuMnk1UlozOEhLdE4zTUd6a1orZWx2eUZRVm9jMHI2TWN4cnVsb1hTR1ByNjlobnc4cTUvcWRSR2VxUDdFaTZrZ096aDZEMnIrWFVaaEsxMWkyNEprWGs2QUh0T0ZlVmJMSDA0NXFtekVyTQogICAgICAgICAgICBwZXBnTWpIVml0N2FTUlBZeSs5K1lpTGhyYnJMKzFYejBHWktEUWhrb3ZaY2trWmx6TmtjUWtoZG55eFE9PTwvTW9kdWx1cz48RXhwb25lbnQ+QVFBQjwvRXhwb25lbnQ+CiAgICAgICAgICAgIDwvUlNBS2V5VmFsdWU+";
@@ -33,17 +27,13 @@ public final class Config {
         return Long.parseLong(s, 16);
     }
 
-    /** 首次读取时补齐默认值；之后所有 RSA 操作均从 prefs/static 配置读取。 */
+    /** 首次读取时补齐默认值；之后所有 RSA 操作均从客户端配置读取。 */
     public static synchronized void load(SharedPreferences sp) {
-        boolean missing = !sp.contains("rsa_patch")
-                || !sp.contains("off_2048") || !sp.contains("off_1024")
-                || !sp.contains("patch_delay_ms")
+        boolean missing = !sp.contains("off_2048") || !sp.contains("off_1024")
                 || !sp.contains("replace_2048_b64") || !sp.contains("replace_1024_b64")
                 || !sp.contains("orig_2048_b64") || !sp.contains("orig_1024_b64");
-        rsaPatch = sp.getBoolean("rsa_patch", rsaPatch);
         off2048 = sp.getString("off_2048", off2048);
         off1024 = sp.getString("off_1024", off1024);
-        patchDelayMs = sp.getInt("patch_delay_ms", patchDelayMs);
 
         replace2048 = sp.getString("replace_2048_b64", DEFAULT_REPLACE_2048);
         replace1024 = sp.getString("replace_1024_b64", DEFAULT_REPLACE_1024);
@@ -84,15 +74,13 @@ public final class Config {
         validate(r2048, 480); validate(r1024, 243);
         replace2048 = r2048.trim(); replace1024 = r1024.trim();
         sp.edit().putString("replace_2048_b64", replace2048)
-                .putString("replace_1024_b64", replace1024).commit();
+                .putString("replace_1024_b64", replace1024).apply();
     }
 
     public static SharedPreferences.Editor edit(SharedPreferences sp) {
         return sp.edit()
-                .putBoolean("rsa_patch", rsaPatch)
                 .putString("off_2048", off2048)
                 .putString("off_1024", off1024)
-                .putInt("patch_delay_ms", patchDelayMs)
                 .putString("replace_2048_b64", replace2048 == null ? DEFAULT_REPLACE_2048 : replace2048)
                 .putString("replace_1024_b64", replace1024 == null ? DEFAULT_REPLACE_1024 : replace1024)
                 .putString("orig_2048_b64", orig2048 == null ? DEFAULT_ORIG_2048 : orig2048)

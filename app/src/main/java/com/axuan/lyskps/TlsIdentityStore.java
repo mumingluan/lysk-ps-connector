@@ -25,7 +25,7 @@ import java.security.cert.X509Certificate;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.util.*;
 
-/** 随机生成、持久化和导入模块内置 TLS 包装器的 CA/Leaf 身份。 */
+/** 随机生成、持久化和导入客户端内置 TLS 包装器的 CA/Leaf 身份。 */
 @SuppressLint("StaticFieldLeak") // singleton stores only getApplicationContext()
 final class TlsIdentityStore {
     static final int CA_CERT=1, CA_KEY=2, LEAF_CERT=3, LEAF_KEY=4;
@@ -73,14 +73,14 @@ final class TlsIdentityStore {
     }
 
     private X509Certificate issueCA(KeyPair pair)throws Exception{
-        Date now=new Date();X500Name subject=new X500Name("CN=LYSK-PS Random CA "+Long.toHexString(random.nextLong())+",O=LYSK-PS");
+        Date now=new Date();X500Name subject=new X500Name("CN=LYSK-PS-Connector Random CA "+Long.toHexString(random.nextLong())+",O=LYSK-PS-Connector");
         JcaX509v3CertificateBuilder b=new JcaX509v3CertificateBuilder(subject,new BigInteger(128,random),new Date(now.getTime()-3600_000L),new Date(now.getTime()+10L*365*24*3600_000L),subject,pair.getPublic());
         b.addExtension(Extension.basicConstraints,true,new BasicConstraints(1));b.addExtension(Extension.keyUsage,true,new KeyUsage(KeyUsage.keyCertSign|KeyUsage.cRLSign|KeyUsage.digitalSignature));
         return finish(b,pair.getPrivate(),pair.getPublic());
     }
     private X509Certificate issueLeaf(String host,PublicKey key)throws Exception{return issueLeaf(new String[]{host},key);}
     private X509Certificate issueLeaf(String[] hosts,PublicKey key)throws Exception{
-        Date now=new Date();X500Name issuer=new X500Name(caCert.getSubjectX500Principal().getName()),subject=new X500Name("CN="+hosts[0]+",O=LYSK-PS Wrapper");
+        Date now=new Date();X500Name issuer=new X500Name(caCert.getSubjectX500Principal().getName()),subject=new X500Name("CN="+hosts[0]+",O=LYSK-PS-Connector Wrapper");
         JcaX509v3CertificateBuilder b=new JcaX509v3CertificateBuilder(issuer,new BigInteger(128,random),new Date(now.getTime()-3600_000L),new Date(Math.min(caCert.getNotAfter().getTime(),now.getTime()+365L*24*3600_000L)),subject,key);
         GeneralName[] names=new GeneralName[hosts.length];for(int i=0;i<hosts.length;i++)names[i]=new GeneralName(GeneralName.dNSName,hosts[i]);
         b.addExtension(Extension.subjectAlternativeName,false,new GeneralNames(names));b.addExtension(Extension.basicConstraints,true,new BasicConstraints(false));b.addExtension(Extension.keyUsage,true,new KeyUsage(KeyUsage.digitalSignature|KeyUsage.keyEncipherment));b.addExtension(Extension.extendedKeyUsage,false,new ExtendedKeyUsage(KeyPurposeId.id_kp_serverAuth));

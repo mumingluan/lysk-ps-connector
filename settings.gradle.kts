@@ -12,5 +12,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "lysk-ps-lsp"
+rootProject.name = "LYSK-PS-Connector"
 include(":app")

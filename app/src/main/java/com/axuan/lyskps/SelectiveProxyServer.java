@@ -14,7 +14,7 @@ import javax.net.ssl.SSLSocketFactory;
  * 重定向模式由内置 CA 动态签发目标证书并终止 TLS，再把明文 HTTP 交给 Web 后端。
  */
 final class SelectiveProxyServer implements Closeable {
-    private static final String TAG = "LYSK-PS.Proxy";
+    private static final String TAG = "LYSK-PS-Connector.Proxy";
     private static final int MAX_HEADER = 64 * 1024;
     private final LyskVpnService vpn;
     private final VpnConfig config;

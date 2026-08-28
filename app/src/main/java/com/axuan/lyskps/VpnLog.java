@@ -6,7 +6,7 @@ import java.io.*;
 import java.text.SimpleDateFormat;
 import java.util.*;
 
-/** 进程内环形日志，同时落盘，供模块页实时显示。 */
+/** 进程内环形日志，同时落盘，供客户端页面实时显示。 */
 public final class VpnLog {
     private static final int MAX_LINES = 300;
     private static final ArrayDeque<String> lines = new ArrayDeque<>();
@@ -27,7 +27,7 @@ public final class VpnLog {
     public static synchronized void i(String tag, String message) {
         String line = CLOCK.format(new Date()) + "  " + tag + "  " + message;
         addMemory(line);
-        Log.i("LYSK-PS." + tag, message);
+        Log.i("LYSK-PS-Connector." + tag, message);
         if (file != null) {
             try (FileWriter w = new FileWriter(file, true)) { w.write(line); w.write('\n'); }
             catch (IOException ignored) {}
