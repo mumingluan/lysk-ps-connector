@@ -1,5 +1,6 @@
 package com.axuan.lyskps;
 
+import android.content.Context;
 import android.util.Log;
 import java.io.*;
 import java.net.*;
@@ -16,18 +17,20 @@ import javax.net.ssl.SSLSocketFactory;
 final class SelectiveProxyServer implements Closeable {
     private static final String TAG = "LYSK-PS-Connector.Proxy";
     private static final int MAX_HEADER = 64 * 1024;
-    private final LyskVpnService vpn;
+    interface SocketProtector { boolean protect(Socket socket); }
+
+    private final SocketProtector protector;
     private final VpnConfig config;
     private final RedirectTlsWrapper tlsWrapper;
     private final ServerSocket listener;
     private final ExecutorService pool = Executors.newCachedThreadPool();
     private volatile boolean closed;
 
-    SelectiveProxyServer(LyskVpnService vpn, VpnConfig config) throws Exception {
-        this.vpn = vpn; this.config = config;
-        this.tlsWrapper = new RedirectTlsWrapper(vpn);
+    SelectiveProxyServer(Context context, VpnConfig config, SocketProtector protector, int listenPort) throws Exception {
+        this.protector = protector; this.config = config;
+        this.tlsWrapper = new RedirectTlsWrapper(context);
         listener = new ServerSocket();
-        listener.bind(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), 0));
+        listener.bind(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), listenPort));
     }
     int port() { return listener.getLocalPort(); }
     void start() { pool.execute(() -> { while (!closed) try { Socket s=listener.accept(); pool.execute(() -> handle(s)); } catch(IOException e){ if(!closed)Log.w(TAG,"accept",e); } }); }
@@ -39,7 +42,8 @@ final class SelectiveProxyServer implements Closeable {
             byte[] first=readHeader(client.getInputStream());
             if(first==null)return;
             Request req=Request.parse(first);
-            boolean matched=config.matches(req.host);
+            int domainDecision=config.domainDecision(req.host);
+            boolean matched=domainDecision==VpnConfig.DOMAIN_INCLUDE;
             boolean viaProxy=matched && config.mode==VpnConfig.MODE_PROXY;
             boolean redirected=matched && config.mode==VpnConfig.MODE_REDIRECT;
             boolean redirectTls=redirected && req.connect;
@@ -48,12 +52,18 @@ final class SelectiveProxyServer implements Closeable {
             if(viaProxy || redirected) {
                 host=config.endpointUri.getHost(); port=config.endpointPort();
             } else { host=req.host; port=req.port; }
-            String action=viaProxy?"PROXY":wrapTls?"REDIRECT-TLS-WRAP":redirectTls?"REDIRECT-TLS-RAW":redirected?"REDIRECT-HTTP":"DIRECT";
+            String action=domainDecision==VpnConfig.DOMAIN_EXCLUDE?"DIRECT-EXCLUDED":viaProxy?"PROXY":wrapTls?"REDIRECT-TLS-WRAP":redirectTls?"REDIRECT-TLS-RAW":redirected?"REDIRECT-HTTP":"DIRECT";
             VpnLog.i(action,req.host+":"+req.port+" → "+host+":"+port+(req.connect?" [HTTPS CONNECT]":" [HTTP]"));
             if(redirectTls&&!config.redirectTlsWrapper&&!"https".equalsIgnoreCase(config.endpointUri.getScheme()))VpnLog.i("WARN","包装器关闭且服务地址不是 HTTPS，TLS 连接很可能失败");
             OutputStream cout=client.getOutputStream();
             if(redirectTls){cout.write("HTTP/1.1 200 Connection Established\r\n\r\n".getBytes(StandardCharsets.ISO_8859_1));cout.flush();if(wrapTls)activeClient=tlsWrapper.wrap(client,req.host);}
-            Socket rawRemote=new Socket();vpn.protect(rawRemote);rawRemote.connect(new InetSocketAddress(host,port),15000);rawRemote.setTcpNoDelay(true);remote=rawRemote;
+            Socket rawRemote=new Socket();remote=rawRemote;
+            // VpnService.protect(Socket) needs an allocated file descriptor. A newly
+            // constructed, unbound Socket has no descriptor yet on Android and protect()
+            // returns false. Bind first so the socket can be excluded from this VPN.
+            rawRemote.bind(new InetSocketAddress(0));
+            if(protector!=null&&!protector.protect(rawRemote))throw new IOException("无法将代理出口绕过 VPN");
+            rawRemote.connect(new InetSocketAddress(host,port),15000);rawRemote.setTcpNoDelay(true);
             boolean backendTls=redirected&&"https".equalsIgnoreCase(config.endpointUri.getScheme())&&(!req.connect||wrapTls);
             if(backendTls){remote=((SSLSocketFactory)SSLSocketFactory.getDefault()).createSocket(rawRemote,host,port,true);((SSLSocket)remote).startHandshake();}
             OutputStream rout=remote.getOutputStream();

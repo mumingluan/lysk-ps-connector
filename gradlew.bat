@@ -33,6 +33,16 @@ set APP_HOME=%DIRNAME%
 @rem Resolve any "." and ".." in APP_HOME to make it shorter.
 for %%i in ("%APP_HOME%") do set APP_HOME=%%~fi
 
+@rem Java 17+ uses AF_UNIX sockets for NIO selector wakeups on Windows. Those
+@rem sockets cannot reconnect when Gradle is launched from an MSIX/AppContainer
+@rem process because its temporary files are virtualized. Keep the socket on a
+@rem short, non-virtualized path and pass it to both the wrapper and its daemon.
+set "GRADLE_JAVA_SOCKET_DIR=%~d0\.java-sockets"
+if not exist "%GRADLE_JAVA_SOCKET_DIR%" mkdir "%GRADLE_JAVA_SOCKET_DIR%" >NUL 2>&1
+set "GRADLE_EXTERNAL_BUILD_DIR=%~d0\.gradle-build\LYSK-PS-Connector"
+if not exist "%GRADLE_EXTERNAL_BUILD_DIR%" mkdir "%GRADLE_EXTERNAL_BUILD_DIR%" >NUL 2>&1
+if exist "%GRADLE_JAVA_SOCKET_DIR%" if exist "%GRADLE_EXTERNAL_BUILD_DIR%" set "JAVA_TOOL_OPTIONS=%JAVA_TOOL_OPTIONS% -Djdk.net.unixdomain.tmpdir=%GRADLE_JAVA_SOCKET_DIR% -Dlysk.gradle.buildRoot=%GRADLE_EXTERNAL_BUILD_DIR%"
+
 @rem Add default JVM options here. You can also use JAVA_OPTS and GRADLE_OPTS to pass JVM options to this script.
 set DEFAULT_JVM_OPTS="-Xmx64m" "-Xms64m"
 

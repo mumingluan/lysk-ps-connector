@@ -18,10 +18,7 @@ public final class VpnLog {
         if (file == null) file = new File(c.getFilesDir(), "vpn.log");
         if (loaded) return;
         loaded = true;
-        if (!file.exists()) return;
-        try (BufferedReader r = new BufferedReader(new FileReader(file))) {
-            String s; while ((s = r.readLine()) != null) addMemory(s);
-        } catch (IOException ignored) {}
+        reload();
     }
 
     public static synchronized void i(String tag, String message) {
@@ -36,6 +33,8 @@ public final class VpnLog {
     }
 
     public static synchronized String snapshot() {
+        // VPN/tun2proxy 运行在独立进程；每次从共享日志文件刷新，避免只看到主进程缓存。
+        reload();
         StringBuilder b = new StringBuilder();
         for (String s : lines) { if (b.length() > 0) b.append('\n'); b.append(s); }
         return b.toString();
@@ -53,6 +52,13 @@ public final class VpnLog {
     private static void rewrite() {
         try (FileWriter w = new FileWriter(file, false)) { for (String s : lines) { w.write(s); w.write('\n'); } }
         catch (IOException ignored) {}
+    }
+    private static void reload() {
+        if (file == null || !file.exists()) return;
+        lines.clear();
+        try (BufferedReader r = new BufferedReader(new FileReader(file))) {
+            String s; while ((s = r.readLine()) != null) addMemory(s);
+        } catch (IOException ignored) {}
     }
     private VpnLog() {}
 }

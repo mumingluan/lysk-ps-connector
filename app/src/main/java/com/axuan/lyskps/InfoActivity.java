@@ -39,6 +39,7 @@ public class InfoActivity extends Activity {
     private Switch tlsWrapper;
     private LinearLayout tlsIdentityPanel;
     private TextView state, logText, certStatus, protocolWarning;
+    private Button httpProxyButton;
     private int pendingShizukuRsaMode;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Shizuku.OnRequestPermissionResultListener shizukuPermissionListener = (requestCode, grantResult) -> {
@@ -69,11 +70,12 @@ public class InfoActivity extends Activity {
         LinearLayout root=new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL); root.setPadding(dp(18),dp(18),dp(18),dp(28)); root.setBackgroundColor(BG);
         TextView title=label("LYSK-PS-Connector",28,TEXT); title.setTypeface(null,Typeface.BOLD); root.addView(title);
-        root.addView(label("Shizuku RSA + Selective VPN  ·  v1.8",13,PRIMARY));
+        root.addView(label("Shizuku RSA + Selective VPN  ·  v1.9",13,PRIMARY));
         root.addView(label("RSA 文件操作需要先启动 Shizuku，并授权本客户端。",13,MUTED));
 
         root.addView(section("过滤范围"));
-        root.addView(label("过滤域名（每行一个，同时匹配其所有子域名）",12,MUTED));domains=edit(true);domains.setMinLines(3);root.addView(domains);
+        root.addView(label("域名规则（每行一个；排除规则优先）",12,MUTED));domains=edit(true);domains.setMinLines(4);root.addView(domains);
+        root.addView(label("普通：papegames.com  ·  正则：re:^api\\d+\\.papegames\\.com$  ·  直连排除：!hotupdate.papegames.com 或 !re:^.+\\.hotupdate\\.papegames\\.com$",11,PRIMARY));
         root.addView(label("VPN 作用包名（每行一个；填 * 代表除客户端自身外的全部应用）",12,MUTED));packages=edit(true);packages.setMinLines(2);root.addView(packages);
 
         root.addView(section("工作模式"));
@@ -103,15 +105,17 @@ public class InfoActivity extends Activity {
         restoreOfficial.setOnClickListener(v->restoreOfficialRsa());
         root.addView(restoreOfficial);
         root.addView(label("补丁 RSA 会在获得 Shizuku 权限后立即改写现有 global-metadata.dat，不启动游戏、不等待；恢复功能仍会先停止游戏。",12,MUTED));
-        root.addView(label("私服公钥会持久写入外部 metadata。需要还原时，可通过 Shizuku 覆盖官方公钥，或删除 metadata 让游戏下次启动自行重新解包。",12,MUTED));
+        root.addView(label("私服公钥会持久写入外部 metadata。需要还原时，可通过 Shizuku 覆盖官方公钥，或删除 il2cpp 目录让游戏下次启动自动重建。",12,MUTED));
 
         LinearLayout actions=new LinearLayout(this);actions.setOrientation(LinearLayout.HORIZONTAL);
         Button start=button("保存并启动",true),stop=button("停止 VPN",false);
         start.setOnClickListener(v->requestStart());stop.setOnClickListener(v->LyskVpnService.stop(this));
         actions.addView(start,weightParams());actions.addView(stop,weightParams());root.addView(actions);
+        httpProxyButton=button("仅启动 HTTP 代理",false);httpProxyButton.setOnClickListener(v->{if(HttpProxyService.isRunning())HttpProxyService.stop(this);else if(save())HttpProxyService.start(this);});root.addView(httpProxyButton);
+        root.addView(label("独立 HTTP 代理监听 127.0.0.1:"+HttpProxyService.PORT+"，不创建 VPN；可供手动代理/调试使用。",12,MUTED));
 
         root.addView(section("实时分流日志"));
-        root.addView(label("DIRECT / PROXY / REDIRECT-HTTP / REDIRECT-TLS-WRAP / RAW 会逐连接显示。",12,MUTED));
+        root.addView(label("DIRECT / DIRECT-EXCLUDED / PROXY / REDIRECT-HTTP / REDIRECT-TLS-WRAP / RAW 会逐连接显示。",12,MUTED));
         logText=label("",11,0xffe2e2e9);logText.setTypeface(Typeface.MONOSPACE);logText.setPadding(dp(12),dp(10),dp(12),dp(10));logText.setBackground(round(0xff18191e,16,OUTLINE));logText.setVerticalScrollBarEnabled(true);logText.setMovementMethod(new ScrollingMovementMethod());logText.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);logText.setOnTouchListener((v,e)->{if(e.getAction()==android.view.MotionEvent.ACTION_DOWN)v.getParent().requestDisallowInterceptTouchEvent(true);else if(e.getAction()==android.view.MotionEvent.ACTION_UP||e.getAction()==android.view.MotionEvent.ACTION_CANCEL)v.getParent().requestDisallowInterceptTouchEvent(false);return false;});root.addView(logText,new LinearLayout.LayoutParams(-1,dp(230)));
         Button clear=button("清空日志",false);clear.setOnClickListener(v->{VpnLog.clear();logText.setText("");});root.addView(clear);
         root.addView(label("重定向模式由客户端内置 TLS/HTTP 包装器解密命中流量，再送入配置的明文 Web 服务。未命中域名由系统网络直接连接。",12,MUTED));
@@ -126,16 +130,16 @@ public class InfoActivity extends Activity {
     @Override protected void onActivityResult(int requestCode,int resultCode,Intent data){super.onActivityResult(requestCode,resultCode,data);if(requestCode==REQ_VPN){if(resultCode==RESULT_OK)startVpn();else Toast.makeText(this,"未授予 VPN 权限",Toast.LENGTH_LONG).show();return;}if(resultCode!=RESULT_OK||data==null||data.getData()==null)return;if(requestCode==REQ_EXPORT_CRT||requestCode==REQ_EXPORT_HASH){new Thread(()->{try(OutputStream out=getContentResolver().openOutputStream(data.getData(),"w")){TlsIdentityStore store=TlsIdentityStore.get(this);out.write(requestCode==REQ_EXPORT_HASH?store.caPemBytes():store.caBytes());out.flush();runOnUiThread(()->Toast.makeText(this,"CA 证书已导出",Toast.LENGTH_LONG).show());}catch(Throwable e){runOnUiThread(()->Toast.makeText(this,"导出失败："+e.getMessage(),Toast.LENGTH_LONG).show());}},"lyskps-export").start();return;}int kind=requestCode==REQ_CA_CERT?TlsIdentityStore.CA_CERT:requestCode==REQ_CA_KEY?TlsIdentityStore.CA_KEY:requestCode==REQ_LEAF_CERT?TlsIdentityStore.LEAF_CERT:TlsIdentityStore.LEAF_KEY;new Thread(()->{try(InputStream in=getContentResolver().openInputStream(data.getData())){String result=TlsIdentityStore.get(this).importPart(kind,in);runOnUiThread(()->{LyskVpnService.stop(this);Toast.makeText(this,result+"；VPN 已停止，请重新启动",Toast.LENGTH_LONG).show();refreshIdentity();});}catch(Throwable e){runOnUiThread(()->Toast.makeText(this,"导入失败："+e.getMessage(),Toast.LENGTH_LONG).show());}},"lyskps-import").start();}
     private void updateShizukuState(){updateState();}
     private void restoreOfficialRsa(){
-        String[] actions={"覆盖两处官方公钥块（保留 metadata）","删除 global-metadata.dat（下次启动自动重建）"};
+        String[] actions={"覆盖两处官方公钥块（保留 metadata）","删除 il2cpp 目录（下次启动自动重建）"};
         new android.app.AlertDialog.Builder(this)
                 .setTitle("使用 Shizuku 恢复官方 RSA")
                 .setItems(actions,(d,which)->{
-                    int mode=which==0?OfficialRsaRestorer.MODE_RESTORE_BLOCKS:OfficialRsaRestorer.MODE_DELETE_METADATA;
-                    if(mode==OfficialRsaRestorer.MODE_DELETE_METADATA){
+                    int mode=which==0?OfficialRsaRestorer.MODE_RESTORE_BLOCKS:OfficialRsaRestorer.MODE_DELETE_IL2CPP;
+                    if(mode==OfficialRsaRestorer.MODE_DELETE_IL2CPP){
                         new android.app.AlertDialog.Builder(this)
-                                .setTitle("删除 metadata？")
-                                .setMessage("将停止恋与深空并删除外部 global-metadata.dat。游戏下次启动时会从原 APK 重新解包，首次启动可能稍慢。")
-                                .setPositiveButton("删除并重建",(x,y)->requestShizukuRsaOperation(mode))
+                                .setTitle("删除 il2cpp 目录？")
+                                .setMessage("将停止恋与深空并删除外部 files/il2cpp 整个目录。游戏下次启动时会自动重建，首次启动可能稍慢。")
+                                .setPositiveButton("删除 il2cpp",(x,y)->requestShizukuRsaOperation(mode))
                                 .setNegativeButton("取消",null).show();
                     }else requestShizukuRsaOperation(mode);
                 })
@@ -165,12 +169,12 @@ public class InfoActivity extends Activity {
             return;
         }
         LyskVpnService.stop(this);
-        String action=mode==OfficialRsaRestorer.MODE_DELETE_METADATA?"删除 metadata":"恢复官方公钥";
+        String action=mode==OfficialRsaRestorer.MODE_DELETE_IL2CPP?"删除 il2cpp 目录":"恢复官方公钥";
         Toast.makeText(this,"正在通过 Shizuku "+action+"…",Toast.LENGTH_SHORT).show();
         OfficialRsaRestorer.restore(this,mode,(ok,detail)->runOnUiThread(()->Toast.makeText(this,(ok?"完成：":"失败：")+detail,Toast.LENGTH_LONG).show()));
     }
     private void startVpn(){VpnLog.i("UI","保存配置并启动 VPN");LyskVpnService.start(this);}
-    private void updateState(){if(state!=null)state.setText("状态  ·  Shizuku "+(Shizuku.pingBinder()?"已连接":"未连接")+"  ·  VPN "+(LyskVpnService.isRunning()?"运行中":"已停止"));}
+    private void updateState(){if(state!=null)state.setText("状态  ·  Shizuku "+(Shizuku.pingBinder()?"已连接":"未连接")+"  ·  VPN "+(LyskVpnService.isRunning(this)?"运行中":"已停止")+"  ·  HTTP代理 "+(HttpProxyService.isRunning()?"运行中":"已停止"));if(httpProxyButton!=null)httpProxyButton.setText(HttpProxyService.isRunning()?"停止 HTTP 代理":"仅启动 HTTP 代理");}
     private boolean isLogAtBottom(){if(logText==null||logText.getLayout()==null)return true;int content=logText.getLayout().getHeight()+logText.getPaddingTop()+logText.getPaddingBottom();return logText.getScrollY()+logText.getHeight()>=content-dp(12);}
     private void scrollLogBottom(){if(logText.getLayout()==null)return;int content=logText.getLayout().getHeight()+logText.getPaddingTop()+logText.getPaddingBottom();logText.scrollTo(0,Math.max(0,content-logText.getHeight()));}
     private Button importButton(String text,int request){Button b=button(text,false);b.setOnClickListener(v->{Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT);i.addCategory(Intent.CATEGORY_OPENABLE);i.setType("*/*");startActivityForResult(i,request);});return b;}

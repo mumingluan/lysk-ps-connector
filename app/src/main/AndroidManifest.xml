@@ -28,12 +28,17 @@
 
         <service
             android:name=".LyskVpnService"
+            android:process=":vpn"
             android:exported="true"
             android:permission="android.permission.BIND_VPN_SERVICE">
             <intent-filter>
                 <action android:name="android.net.VpnService"/>
             </intent-filter>
         </service>
+
+        <service
+            android:name=".HttpProxyService"
+            android:exported="false" />
 
         <!-- Shizuku API bootstrap provider; required before Shizuku.pingBinder() can work. -->
         <provider

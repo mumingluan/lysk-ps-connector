@@ -10,11 +10,12 @@ import java.io.RandomAccessFile;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 
-/** Shizuku UserService：以 Shizuku 的 shell/root 身份补丁、恢复或删除游戏 metadata。 */
+/** Shizuku UserService：以 Shizuku 的 shell/root 身份补丁、恢复 RSA 或重建游戏 il2cpp 数据。 */
 public final class ShizukuRsaService extends IShizukuRsaService.Stub {
     private static final String TARGET = "com.papegames.lysk.cn";
-    private static final String META = "/storage/emulated/0/Android/data/" + TARGET
-            + "/files/il2cpp/Metadata/global-metadata.dat";
+    private static final String IL2CPP = "/storage/emulated/0/Android/data/" + TARGET
+            + "/files/il2cpp";
+    private static final String META = IL2CPP + "/Metadata/global-metadata.dat";
     private static final long OFF_2048 = 0x22aee2fL;
     private static final long OFF_1024 = 0x22af00fL;
     private Context context;
@@ -25,7 +26,7 @@ public final class ShizukuRsaService extends IShizukuRsaService.Stub {
         this.context = context;
     }
 
-    /** 兼容旧实例化路径；没有 Context 时仍可补丁或删除 metadata。 */
+    /** 兼容旧实例化路径；没有 Context 时仍可补丁或重建 il2cpp。 */
     @SuppressWarnings("unused")
     public ShizukuRsaService() {}
 
@@ -47,24 +48,27 @@ public final class ShizukuRsaService extends IShizukuRsaService.Stub {
     }
 
     @Override
-    public String restore(boolean deleteMetadata) {
+    public String restore(boolean deleteIl2cpp) {
         try {
             CommandResult stopped = runCommand("am", "force-stop", TARGET);
             if (stopped.code != 0) {
                 return fail("无法停止游戏，exit=" + stopped.code + suffix(stopped.output));
             }
 
-            File metadata = new File(META);
-            if (deleteMetadata) {
-                if (!metadata.exists()) return ok("metadata 已不存在，下次启动会从原 APK 重新生成");
-                if (!metadata.delete() || metadata.exists()) {
-                    return fail("删除 global-metadata.dat 失败；当前 Shizuku 身份可能无权访问 Android/data");
+            if (deleteIl2cpp) {
+                File il2cpp = new File(IL2CPP);
+                if (!il2cpp.exists()) return ok("il2cpp 目录已不存在，下次启动会自动重建");
+                CommandResult removed = runCommand("rm", "-rf", IL2CPP);
+                if (removed.code != 0 || il2cpp.exists()) {
+                    return fail("删除 il2cpp 目录失败，exit=" + removed.code
+                            + suffix(removed.output) + "；当前 Shizuku 身份可能无权访问 Android/data");
                 }
-                return ok("已删除 global-metadata.dat；下次启动游戏会从原 APK 重新生成");
+                return ok("已删除 il2cpp 目录；下次启动游戏会自动重建");
             }
 
+            File metadata = new File(META);
             if (context == null) return fail("Shizuku UserService 未获得客户端 Context");
-            if (!metadata.isFile()) return fail("找不到 global-metadata.dat，可改用删除重建模式后直接启动游戏");
+            if (!metadata.isFile()) return fail("找不到 global-metadata.dat，可使用重建 il2cpp 后直接启动游戏");
 
             byte[] official2048 = Config.orig2048Bytes();
             byte[] official1024 = Config.orig1024Bytes();

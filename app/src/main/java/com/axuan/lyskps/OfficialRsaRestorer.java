@@ -10,10 +10,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import rikka.shizuku.Shizuku;
 
-/** 使用 Shizuku UserService 补丁/恢复 RSA，或删除 metadata 让游戏自行重新解包。 */
+/** 使用 Shizuku UserService 补丁/恢复 RSA，或删除 il2cpp 目录让游戏自行重建。 */
 public final class OfficialRsaRestorer {
     public static final int MODE_RESTORE_BLOCKS = 1;
-    public static final int MODE_DELETE_METADATA = 2;
+    public static final int MODE_DELETE_IL2CPP = 2;
     public static final int MODE_APPLY_PRIVATE = 3;
 
     public interface Callback {
@@ -35,7 +35,7 @@ public final class OfficialRsaRestorer {
                                 byte[] replacement2048, byte[] replacement1024,
                                 Callback callback) {
         Context app = context.getApplicationContext();
-        if (mode != MODE_RESTORE_BLOCKS && mode != MODE_DELETE_METADATA
+        if (mode != MODE_RESTORE_BLOCKS && mode != MODE_DELETE_IL2CPP
                 && mode != MODE_APPLY_PRIVATE) {
             callback(callback, false, "未知 RSA 操作");
             return;
@@ -64,7 +64,7 @@ public final class OfficialRsaRestorer {
                     .daemon(false)
                     .processNameSuffix("rsa_file")
                     .debuggable(false)
-                    .version(2);
+                    .version(3);
             Operation operation = new Operation(args, mode, off2048, off1024,
                     replacement2048, replacement1024, callback);
             Shizuku.bindUserService(args, operation);
@@ -105,7 +105,7 @@ public final class OfficialRsaRestorer {
                     IShizukuRsaService service = IShizukuRsaService.Stub.asInterface(binder);
                     String result = mode == MODE_APPLY_PRIVATE
                             ? service.patch(off2048, off1024, replacement2048, replacement1024)
-                            : service.restore(mode == MODE_DELETE_METADATA);
+                            : service.restore(mode == MODE_DELETE_IL2CPP);
                     boolean ok = result != null && result.startsWith("OK\n");
                     String detail = result == null ? "Shizuku 服务没有返回结果"
                             : result.replaceFirst("^(OK|ERR)\\n", "").replace('\n', '：');

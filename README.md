@@ -12,11 +12,11 @@
 ## 功能
 
 - 通过 Shizuku 立即补丁 `global-metadata.dat` 中的私服 RSA 公钥，客户端独立完成文件操作。
-- 通过 Shizuku 覆盖官方公钥，或删除 metadata 让游戏下次启动自行重新解包。
+- 通过 Shizuku 覆盖官方公钥，或删除 `files/il2cpp` 目录让游戏下次启动自动重建。
 - 集成 `ShizukuProvider`；首次执行 RSA 文件操作前，请启动 Shizuku 并授权本客户端。
 - RSA 公钥块和当前客户端偏移默认保存在 `Config.java`，文件操作由 Shizuku UserService 完成。
 - 只接管指定应用的 `VpnService`；包名可填 `*`，表示除 LYSK-PS-Connector 自身外的全部应用。
-- 域名规则同时匹配自身和子域名，未命中流量直接走系统网络。
+- 域名规则支持普通域名、`re:` 正则表达式和 `!` 直连排除；排除规则始终优先。
 - HTTP 代理模式：命中域名使用配置的 HTTP 代理。
 - Web 重定向模式：命中域名连接配置的 HTTP/HTTPS 服务。
 - 可选内置 HTTPS 包装器：针对 CONNECT 目标动态签发叶证书、终止 TLS，再把 HTTP 转发到后端。
@@ -36,12 +36,23 @@ VPN 数据面使用 [tun2proxy](https://github.com/tun2proxy/tun2proxy)，动态
 2. 启动 Shizuku；如需 RSA 文件操作，请在首次提示时授权 `LYSK-PS-Connector`。
 3. 打开 `LYSK-PS-Connector`：
    - 点击“补丁 RSA（Shizuku）”，授权后立即改写现有 metadata；
-   - 需要还原时，选择覆盖官方公钥或删除 metadata 并让游戏重新解包；
+   - 需要还原时，选择覆盖官方公钥或删除 `files/il2cpp` 并让游戏自动重建；
    - 配置过滤域名和 VPN 作用包名；
    - 选择 HTTP 代理或 Web 重定向；
    - 分别填写“上游代理地址”和“上游 HTTP 服务地址”；
    - 按需启用内置 HTTPS 包装器。
 4. 点击“保存并启动”，首次使用时接受 Android VPN 授权。
+
+### 域名规则
+
+- `papegames.com`：命中该域名及全部子域名。
+- `re:^api\d+\.papegames\.com$`：使用正则表达式匹配完整主机名，忽略大小写。
+- `!hotupdate.papegames.com`：排除该域名及子域名，强制走系统直连。
+- `!re:^.+\.hotupdate\.papegames\.com$`：使用正则表达式排除。
+
+排除规则与包含规则同时命中时，结果为 `DIRECT-EXCLUDED`。
+新安装的内置列表默认包含 `papegames.com` 和 `papegames.cn`，并排除
+`x3cn-client-*.papegames.com` 热更 CDN 使其直连。
 
 ### HTTPS 包装器证书
 
@@ -97,7 +108,7 @@ python tools/generate_icons.py
 - HTTP 上游代理不提供通用 UDP 转发；QUIC/HTTP3 可能回退 TCP，也可能失败。
 - 包装器关闭后，HTTPS 原始 TLS 只能重定向到真正支持 `https://` 的服务。
 - RSA metadata 偏移与客户端版本绑定；当前默认值为 `0x22aee2f` / `0x22af00f`。
-- 公钥替换会持久写入游戏外部目录的 `global-metadata.dat`。需要还原时，请启动并授权 Shizuku，在客户端页面选择覆盖官方公钥块，或删除 `global-metadata.dat` 让游戏下次启动从原 APK 重新解包。
+- 公钥替换会持久写入游戏外部目录的 `global-metadata.dat`。需要还原时，请启动并授权 Shizuku，在客户端页面选择覆盖官方公钥块，或删除 `files/il2cpp` 目录让游戏下次启动自动重建。
 - 若页面一直提示“Shizuku 未连接”，请确认 Shizuku 正在运行，并在 Shizuku 管理器中重新检查授权。
 - 包名从旧测试版 `cn.mingluan.lyskps` 改为 `com.axuan.lyskps`，旧版配置不会自动迁移。
 
