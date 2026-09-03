@@ -1418,32 +1418,44 @@ private fun HomeStatusCard(
                 )
             }
 
-            if (isShizukuConnected) {
-                Row(
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(16.dp, 14.dp)
-                        .clip(CircleShape)
-                        .background(colors.primaryContainer)
-                        .padding(horizontal = 9.dp, vertical = 5.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(6.dp)
-                            .clip(CircleShape)
-                            .background(colors.primary)
-                    )
-                    Text(
-                        text = "Shizuku",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = colors.onPrimaryContainer
-                    )
-                }
-            }
+            ShizukuStatusBadge(
+                isShizukuConnected = isShizukuConnected,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(16.dp, 14.dp)
+            )
         }
+    }
+}
+
+@Composable
+private fun ShizukuStatusBadge(
+    isShizukuConnected: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val colors = MiuixTheme.colorScheme
+    Row(
+        modifier = modifier
+            .clip(CircleShape)
+            .background(if (isShizukuConnected) colors.primaryContainer else colors.errorContainer)
+            .padding(horizontal = 10.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(6.dp)
+                .clip(CircleShape)
+                .background(if (isShizukuConnected) colors.primary else colors.error)
+        )
+        Text(
+            text = if (isShizukuConnected) "Shizuku 已就绪" else "Shizuku 未就绪",
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Medium,
+            color = if (isShizukuConnected) colors.onPrimaryContainer else colors.onErrorContainer,
+            maxLines = 1,
+            softWrap = false
+        )
     }
 }
 
@@ -1470,27 +1482,53 @@ private fun HomeActionCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(start = 12.dp, end = 12.dp, bottom = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            TextButton(
+            HomeActionButton(
                 text = primaryText,
+                primary = true,
                 onClick = onPrimaryClick,
-                modifier = Modifier.weight(if (tertiaryText == null) 1f else 1.05f),
-                colors = ButtonDefaults.textButtonColorsPrimary()
+                modifier = Modifier.weight(1f)
             )
-            TextButton(
+            HomeActionButton(
                 text = secondaryText,
+                primary = false,
                 onClick = onSecondaryClick,
-                modifier = Modifier.weight(if (tertiaryText == null) 1f else 0.72f)
+                modifier = Modifier.weight(1f)
             )
             if (tertiaryText != null && onTertiaryClick != null) {
-                TextButton(
+                HomeActionButton(
                     text = tertiaryText,
+                    primary = false,
                     onClick = onTertiaryClick,
-                    modifier = Modifier.weight(1.35f)
+                    modifier = Modifier.weight(1f)
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun HomeActionButton(
+    text: String,
+    primary: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Button(
+        onClick = onClick,
+        modifier = modifier.height(46.dp),
+        colors = if (primary) ButtonDefaults.buttonColorsPrimary() else ButtonDefaults.buttonColors(),
+        insideMargin = PaddingValues(horizontal = 8.dp)
+    ) {
+        Text(
+            text = text,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            softWrap = false
+        )
     }
 }
 
@@ -1519,30 +1557,7 @@ fun LiquidGlassHeroCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 // Shizuku Badge
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(100.dp))
-                        .background(
-                            if (isShizukuConnected) colors.primaryContainer else colors.errorContainer
-                        )
-                        .padding(horizontal = 10.dp, vertical = 4.dp)
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(6.dp)
-                                .clip(CircleShape)
-                                .background(if (isShizukuConnected) colors.primary else colors.error)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = if (isShizukuConnected) "Shizuku 已连接" else "Shizuku 未运行",
-                            fontSize = 10.5.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = if (isShizukuConnected) colors.onPrimaryContainer else colors.onErrorContainer
-                        )
-                    }
-                }
+                ShizukuStatusBadge(isShizukuConnected = isShizukuConnected)
 
                 // 启动游戏快捷胶囊
                 TextButton(
