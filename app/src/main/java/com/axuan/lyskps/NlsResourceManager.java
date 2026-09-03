@@ -6,6 +6,8 @@ import android.content.ServiceConnection;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.os.IBinder;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.ParcelFileDescriptor;
 
 import java.io.ByteArrayOutputStream;
@@ -17,6 +19,9 @@ import java.io.OutputStream;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
+import java.util.Collections;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import rikka.shizuku.Shizuku;
@@ -29,6 +34,9 @@ final class NlsResourceManager {
     private static final String PREFS = "nls_resource_state";
     private static final String KEY_ZIP = "zip_name";
     private static final String KEY_NX = "nx_name";
+    private static final Set<Operation> ACTIVE_OPERATIONS = Collections.newSetFromMap(
+            new ConcurrentHashMap<Operation, Boolean>());
+    private static final Handler MAIN = new Handler(Looper.getMainLooper());
 
     interface Callback {
         void done(boolean success, String detail);
@@ -39,24 +47,26 @@ final class NlsResourceManager {
     }
 
     static void restoreBackup(Context context, Callback callback) {
+        VpnLog.init(context.getApplicationContext());
         String[] names = storedNames(context);
         if (names == null) {
-            callback.done(false, "找不到 NLS 安装记录或自动备份");
+            complete(callback, false, "找不到 NLS 安装记录或自动备份");
             return;
         }
         File zip = backupFile(context, names[0]);
         File nx = backupFile(context, names[1]);
         if (!zip.isFile() || !nx.isFile()) {
-            callback.done(false, "找不到 NLS ZIP/NX 自动备份文件");
+            complete(callback, false, "找不到 NLS ZIP/NX 自动备份文件");
             return;
         }
         execute(context, MODE_RESTORE_BACKUP, null, names[0], names[1], callback);
     }
 
     static void deleteInstalled(Context context, Callback callback) {
+        VpnLog.init(context.getApplicationContext());
         String[] names = storedNames(context);
         if (names == null) {
-            callback.done(false, "找不到已安装的 NLS ZIP/NX 记录");
+            complete(callback, false, "找不到已安装的 NLS ZIP/NX 记录");
             return;
         }
         execute(context, MODE_DELETE, null, names[0], names[1], callback);
@@ -65,6 +75,8 @@ final class NlsResourceManager {
     private static void execute(Context context, int mode, SolverNlsArchive.Prepared prepared,
                                 String zipName, String nxName, Callback callback) {
         Context app = context.getApplicationContext();
+        VpnLog.init(app);
+        VpnLog.i("NLS", "提交 Shizuku 操作：" + actionName(mode));
         try {
             if (!Shizuku.pingBinder()) throw new IllegalStateException("Shizuku 未运行或尚未连接");
             if (Shizuku.isPreV11() || Shizuku.getVersion() < 10) {
@@ -78,11 +90,17 @@ final class NlsResourceManager {
                     .daemon(false)
                     .processNameSuffix("game_files")
                     .debuggable(false)
-                    .version(4);
-            Shizuku.bindUserService(args,
-                    new Operation(app, args, mode, prepared, zipName, nxName, callback));
+                    .version(5);
+            Operation operation = new Operation(app, args, mode, prepared, zipName, nxName, callback);
+            ACTIVE_OPERATIONS.add(operation);
+            try {
+                Shizuku.bindUserService(args, operation);
+                MAIN.postDelayed(operation.timeoutTask, 30_000L);
+            } catch (Throwable t) {
+                operation.finish(false, "启动 Shizuku 服务失败：" + message(t));
+            }
         } catch (Throwable t) {
-            callback.done(false, message(t));
+            complete(callback, false, message(t));
         }
     }
 
@@ -95,6 +113,7 @@ final class NlsResourceManager {
         private final String nxName;
         private final Callback callback;
         private final AtomicBoolean finished = new AtomicBoolean();
+        private final Runnable timeoutTask = this::timeout;
 
         Operation(Context app, Shizuku.UserServiceArgs args, int mode,
                   SolverNlsArchive.Prepared prepared, String zipName, String nxName,
@@ -110,10 +129,12 @@ final class NlsResourceManager {
 
         @Override
         public void onServiceConnected(ComponentName name, IBinder binder) {
+            MAIN.removeCallbacks(timeoutTask);
             if (binder == null || !binder.pingBinder()) {
                 finish(false, "Shizuku 返回了无效的 UserService Binder");
                 return;
             }
+            VpnLog.i("NLS", "Shizuku UserService 已连接，开始执行：" + actionName(mode));
             new Thread(() -> run(IShizukuRsaService.Stub.asInterface(binder)),
                     "lyskps-nls-files").start();
         }
@@ -188,10 +209,30 @@ final class NlsResourceManager {
 
         private void finish(boolean success, String detail) {
             if (!finished.compareAndSet(false, true)) return;
+            MAIN.removeCallbacks(timeoutTask);
+            ACTIVE_OPERATIONS.remove(this);
             VpnLog.i(success ? "NLS" : "ERROR", detail);
             try { Shizuku.unbindUserService(args, this, true); }
             catch (Throwable ignored) {}
             callback.done(success, detail);
+        }
+
+        private void timeout() {
+            finish(false, "等待 Shizuku UserService 超时，操作未执行");
+        }
+    }
+
+    private static void complete(Callback callback, boolean success, String detail) {
+        VpnLog.i(success ? "NLS" : "ERROR", detail);
+        if (callback != null) callback.done(success, detail);
+    }
+
+    private static String actionName(int mode) {
+        switch (mode) {
+            case MODE_INSTALL: return "安装 NLS ZIP/NX";
+            case MODE_RESTORE_BACKUP: return "从私有备份还原 NLS";
+            case MODE_DELETE: return "删除已安装 NLS";
+            default: return "未知操作 " + mode;
         }
     }
 

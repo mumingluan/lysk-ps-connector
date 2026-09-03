@@ -13,11 +13,14 @@ import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
@@ -33,6 +36,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -42,7 +46,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import rikka.shizuku.Shizuku
 import rikka.shizuku.ShizukuProvider
-import androidx.core.view.WindowInsetsControllerCompat
 import top.yukonga.miuix.kmp.basic.*
 import top.yukonga.miuix.kmp.blur.LayerBackdrop
 import top.yukonga.miuix.kmp.blur.layerBackdrop
@@ -53,6 +56,9 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.ThemeColorSpec
 import top.yukonga.miuix.kmp.theme.ThemeController
 import top.yukonga.miuix.kmp.theme.ThemePaletteStyle
+import top.yukonga.miuix.kmp.utils.PressFeedbackType
+import top.yukonga.miuix.kmp.utils.overScrollVertical
+import top.yukonga.miuix.kmp.utils.scrollEndHaptic
 import top.yukonga.miuix.kmp.window.WindowDialog
 import java.io.InputStream
 import java.io.OutputStream
@@ -86,20 +92,26 @@ class InfoActivity : ComponentActivity() {
     private val selectNlsZipLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
         val uri: Uri? = res.data?.data
         if (res.resultCode == RESULT_OK && uri != null) {
+            VpnLog.i("NLS", "已选择 ZIP，开始校验并解压")
             showToast("正在校验并解压 Solver NLS 资源…")
             Thread {
                 try {
                     val prepared = SolverNlsArchive.prepare(this, uri)
                     runOnUiThread {
                         pendingNlsPrepared = prepared
+                        VpnLog.i("NLS", "ZIP/NX 校验完成，提交 Shizuku 安装")
                         requestShizukuOperation(NlsResourceManager.MODE_INSTALL)
                     }
                 } catch (t: Throwable) {
                     runOnUiThread {
-                        showToast("NLS ZIP 解析失败：" + (t.message ?: t.javaClass.simpleName))
+                        val detail = "NLS ZIP 解析失败：" + (t.message ?: t.javaClass.simpleName)
+                        VpnLog.i("ERROR", detail)
+                        showToast(detail)
                     }
                 }
             }.start()
+        } else {
+            VpnLog.i("NLS", "已取消选择 Solver NLS ZIP")
         }
     }
 
@@ -189,8 +201,10 @@ class InfoActivity : ComponentActivity() {
             val mode = pendingShizukuMode
             pendingShizukuMode = 0
             if (grantResult == PackageManager.PERMISSION_GRANTED && mode != 0) {
+                VpnLog.i("ACTION", "Shizuku 权限已授予，继续执行：${shizukuActionName(mode)}")
                 runShizukuOperation(mode)
             } else {
+                VpnLog.i("ERROR", "未授予 Shizuku 权限，操作已取消")
                 showToast("未授予 Shizuku 权限")
             }
         }
@@ -225,11 +239,19 @@ class InfoActivity : ComponentActivity() {
                     colorSpec = ThemeColorSpec.Spec2025
                 )
             }
-            LaunchedEffect(isDark) {
-                WindowInsetsControllerCompat(window, window.decorView).apply {
-                    isAppearanceLightStatusBars = !isDark
-                    isAppearanceLightNavigationBars = !isDark
-                }
+            DisposableEffect(isDark) {
+                enableEdgeToEdge(
+                    statusBarStyle = SystemBarStyle.auto(
+                        android.graphics.Color.TRANSPARENT,
+                        android.graphics.Color.TRANSPARENT
+                    ) { isDark },
+                    navigationBarStyle = SystemBarStyle.auto(
+                        android.graphics.Color.TRANSPARENT,
+                        android.graphics.Color.TRANSPARENT
+                    ) { isDark }
+                )
+                window.isNavigationBarContrastEnforced = false
+                onDispose { }
             }
             MiuixTheme(controller = themeController) {
                 MainScreen(
@@ -354,29 +376,52 @@ class InfoActivity : ComponentActivity() {
     }
 
     private fun requestShizukuOperation(mode: Int) {
+        val action = shizukuActionName(mode)
+        VpnLog.i("ACTION", "请求执行：$action")
         try {
             if (!Shizuku.pingBinder()) {
-                showToast("Shizuku 未运行或尚未连接，请检查 Shizuku 状态")
+                val detail = "Shizuku 未运行或尚未连接，无法执行：$action"
+                VpnLog.i("ERROR", detail)
+                showToast(detail)
                 try { ShizukuProvider.requestBinderForNonProviderProcess(this) } catch (ignored: Throwable) {}
                 return
             }
             if (Shizuku.isPreV11()) {
+                val detail = "Shizuku 版本过旧，无法执行：$action"
+                VpnLog.i("ERROR", detail)
                 showToast("Shizuku 版本过旧，请升级至 v11+")
                 return
             }
             if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
+                VpnLog.i("ACTION", "权限已就绪，开始执行：$action")
                 runShizukuOperation(mode)
                 return
             }
             if (Shizuku.shouldShowRequestPermissionRationale()) {
+                val detail = "Shizuku 权限已被拒绝，无法执行：$action"
+                VpnLog.i("ERROR", detail)
                 showToast("Shizuku 权限已被拒绝，请在 Shizuku 应用中重新授权")
                 return
             }
             pendingShizukuMode = mode
+            VpnLog.i("ACTION", "正在请求 Shizuku 权限：$action")
             Shizuku.requestPermission(3001)
         } catch (e: Throwable) {
-            showToast("连接 Shizuku 失败：" + e.message)
+            val detail = "连接 Shizuku 失败：" + (e.message ?: e.javaClass.simpleName)
+            VpnLog.i("ERROR", detail)
+            showToast(detail)
         }
+    }
+
+    private fun shizukuActionName(mode: Int): String = when (mode) {
+        OfficialRsaRestorer.MODE_APPLY_PRIVATE -> "立即补丁 RSA"
+        OfficialRsaRestorer.MODE_RESTORE_BACKUP -> "从自动备份还原 RSA"
+        OfficialRsaRestorer.MODE_RESTORE_BLOCKS -> "恢复官方 RSA 公钥"
+        OfficialRsaRestorer.MODE_DELETE_IL2CPP -> "删除并重建 il2cpp"
+        NlsResourceManager.MODE_INSTALL -> "安装 NLS ZIP/NX"
+        NlsResourceManager.MODE_RESTORE_BACKUP -> "从私有备份还原 NLS"
+        NlsResourceManager.MODE_DELETE -> "删除已安装 NLS"
+        else -> "未知操作 $mode"
     }
 
     private fun runShizukuOperation(mode: Int) {
@@ -384,6 +429,7 @@ class InfoActivity : ComponentActivity() {
             NlsResourceManager.MODE_INSTALL -> {
                 val prepared = pendingNlsPrepared
                 if (prepared == null) {
+                    VpnLog.i("ERROR", "NLS 安装未执行：尚未准备 Solver ZIP/NX")
                     showToast("请先选择 Solver NLS ZIP")
                     return
                 }
@@ -420,7 +466,9 @@ class InfoActivity : ComponentActivity() {
                         runOnUiThread { showToast((if (ok) "完成：" else "失败：") + detail) }
                     }
                 } catch (e: Throwable) {
-                    showToast("RSA 配置无效：" + e.message)
+                    val detail = "RSA 配置无效：" + (e.message ?: e.javaClass.simpleName)
+                    VpnLog.i("ERROR", detail)
+                    showToast(detail)
                 }
             }
             OfficialRsaRestorer.MODE_RESTORE_BACKUP -> {
@@ -442,6 +490,7 @@ class InfoActivity : ComponentActivity() {
     }
 
     private fun selectNlsZip() {
+        VpnLog.i("NLS", "打开文件选择器，等待 Solver NLS ZIP")
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
             type = "application/zip"
@@ -554,9 +603,17 @@ fun MainScreen(
     onClearLogs: () -> Unit,
     onCopyLogs: () -> Unit
 ) {
-    val scrollState = rememberScrollState()
+    val homeScrollState = rememberScrollState()
+    val proxyScrollState = rememberScrollState()
+    val tlsScrollState = rememberScrollState()
+    val logsPageScrollState = rememberScrollState()
+    val logViewportScrollState = rememberScrollState()
     val scrollBehavior = MiuixScrollBehavior()
-    val surfaceColor = MiuixTheme.colorScheme.surface
+    val surfaceColor = lerp(
+        MiuixTheme.colorScheme.surface,
+        MiuixTheme.colorScheme.surfaceContainer,
+        0.45f
+    )
     val backdrop = rememberLayerBackdrop {
         drawRect(surfaceColor)
         drawContent()
@@ -586,14 +643,25 @@ fun MainScreen(
     val addressLower = redirectEndpoint.trim().lowercase(Locale.ROOT)
     val isHttps = addressLower.startsWith("https://")
 
-    LaunchedEffect(selectedTab) {
-        scrollState.scrollTo(0)
+    val pageScrollState = when (selectedTab) {
+        MainTab.HOME -> homeScrollState
+        MainTab.PROXY -> proxyScrollState
+        MainTab.TLS -> tlsScrollState
+        MainTab.LOGS -> logsPageScrollState
+    }
+
+    LaunchedEffect(selectedTab, logSnapshot) {
+        if (selectedTab == MainTab.LOGS) {
+            withFrameNanos { }
+            withFrameNanos { }
+            logViewportScrollState.scrollTo(logViewportScrollState.maxValue)
+        }
     }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = selectedTab.label,
+                title = if (selectedTab == MainTab.HOME) "LYSK PS Connector" else selectedTab.label,
                 actions = {
                     Text(
                         text = "3.1",
@@ -611,63 +679,61 @@ fun MainScreen(
                 backdrop = backdrop,
                 onSelected = { selectedTab = it }
             )
-        }
+        },
+        contentWindowInsets = WindowInsets.systemBars
+            .add(WindowInsets.displayCutout)
+            .only(WindowInsetsSides.Horizontal)
     ) { padding ->
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(MiuixTheme.colorScheme.surface)
+                .background(surfaceColor)
                 .layerBackdrop(backdrop)
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(padding)
                     .nestedScroll(scrollBehavior.nestedScrollConnection)
-                    .verticalScroll(scrollState)
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                    .scrollEndHaptic()
+                    .overScrollVertical()
+                    .verticalScroll(pageScrollState)
+                    .padding(horizontal = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                Spacer(modifier = Modifier.height(padding.calculateTopPadding() + 12.dp))
 
                 // -------------------------------------------------------------
                 // 1. HERO CARD (液态玻璃 / Liquid Glass 主卡片)
                 // -------------------------------------------------------------
                 if (selectedTab == MainTab.HOME) {
-                    LiquidGlassHeroCard(
+                    HomeStatusCard(
                         isVpnRunning = isVpnRunning,
                         isShizukuConnected = isShizukuConnected,
                         modeName = if (isRedirect) "Web 重定向" else "HTTP 代理",
                         tlsWrapperActive = redirectTlsWrapper && isRedirect,
-                        onToggle = { onToggleVpn(currentConfig()) },
-                        onLaunchGame = onLaunchGame
+                        onToggle = { onToggleVpn(currentConfig()) }
                     )
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        LiquidGlassActionCard(
-                            modifier = Modifier.weight(1f),
-                            title = "RSA 补丁",
-                            subtitle = "改写公钥",
-                            buttonText = "立即补丁",
-                            onClick = onPatchRsa,
-                            onSecondaryClick = { activeDialog = AppDialog.RSA_OPTIONS },
-                            secondaryText = "还原",
-                            onTertiaryClick = { activeDialog = AppDialog.RSA_KEY_OPTIONS },
-                            tertiaryText = "导入新公钥"
-                        )
+                    HomeActionCard(
+                        title = "RSA 公钥补丁",
+                        subtitle = "修改 metadata 中的 2048/1024 位公钥",
+                        primaryText = "立即补丁",
+                        onPrimaryClick = onPatchRsa,
+                        secondaryText = "还原",
+                        onSecondaryClick = { activeDialog = AppDialog.RSA_OPTIONS },
+                        tertiaryText = "导入新公钥",
+                        onTertiaryClick = { activeDialog = AppDialog.RSA_KEY_OPTIONS }
+                    )
 
-                        LiquidGlassActionCard(
-                            modifier = Modifier.weight(1f),
-                            title = "NLS 资源",
-                            subtitle = "Solver ZIP/NX",
-                            buttonText = "安装 ZIP",
-                            onClick = onSelectNlsZip,
-                            onSecondaryClick = { activeDialog = AppDialog.NLS_OPTIONS },
-                            secondaryText = "还原"
-                        )
-                    }
+                    HomeActionCard(
+                        title = "NLS 语音资源",
+                        subtitle = "安装或还原配套 Solver ZIP/NX",
+                        primaryText = "安装 ZIP",
+                        onPrimaryClick = onSelectNlsZip,
+                        secondaryText = "还原",
+                        onSecondaryClick = { activeDialog = AppDialog.NLS_OPTIONS }
+                    )
+
                 }
 
                 // -------------------------------------------------------------
@@ -930,12 +996,12 @@ fun MainScreen(
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(260.dp)
+                            .height(420.dp)
                             .padding(horizontal = 14.dp, vertical = 6.dp)
                             .clip(RoundedCornerShape(14.dp))
                             .background(MiuixTheme.colorScheme.surfaceContainerHighest)
                             .padding(12.dp)
-                            .verticalScroll(rememberScrollState())
+                            .verticalScroll(logViewportScrollState)
                     ) {
                         Text(
                             text = if (logSnapshot.isEmpty()) "-- 暂无分流连接日志 --" else logSnapshot,
@@ -950,7 +1016,28 @@ fun MainScreen(
                 }
                 }
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(padding.calculateBottomPadding() + 12.dp))
+            }
+
+            if (selectedTab == MainTab.HOME) {
+                FloatingActionButton(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(
+                            bottom = padding.calculateBottomPadding() + 20.dp,
+                            end = 20.dp
+                        )
+                        .border(0.05.dp, MiuixTheme.colorScheme.outline.copy(alpha = 0.5f), CircleShape),
+                    shadowElevation = 0.dp,
+                    onClick = onLaunchGame
+                ) {
+                    Icon(
+                        imageVector = AppIcons.Launch,
+                        contentDescription = "启动恋与深空",
+                        modifier = Modifier.size(40.dp),
+                        tint = MiuixTheme.colorScheme.onPrimary
+                    )
+                }
             }
         }
     }
@@ -1223,18 +1310,189 @@ private fun LiquidGlassBottomBar(
             NavigationItem("日志", AppIcons.Logs)
         )
     }
-    IosLiquidGlassNavigationBar(
-        items = items,
+    val bottomPadding = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+        .let { inset -> if (inset != 0.dp) 8.dp + inset else 36.dp }
+    FloatingBottomBar(
+        modifier = Modifier.padding(start = 24.dp, end = 24.dp, bottom = bottomPadding),
         selectedIndex = MainTab.entries.indexOf(selectedTab),
-        onItemClick = { onSelected(MainTab.entries[it]) },
+        onSelected = { onSelected(MainTab.entries[it]) },
         backdrop = backdrop,
-        isBlurActive = true
-    )
+        tabsCount = items.size,
+        isBlurEnabled = true
+    ) { activateTab ->
+        items.forEachIndexed { index, item ->
+            FloatingBottomBarItem(
+                selected = MainTab.entries.indexOf(selectedTab) == index,
+                onClick = { activateTab(index) },
+                modifier = Modifier.defaultMinSize(minWidth = 76.dp)
+            ) {
+                Icon(
+                    imageVector = item.icon,
+                    contentDescription = item.label
+                )
+                Text(
+                    text = item.label,
+                    fontSize = 11.sp,
+                    lineHeight = 14.sp,
+                    maxLines = 1,
+                    softWrap = false
+                )
+            }
+        }
+    }
 }
 
 // -----------------------------------------------------------------------------
 // 液态玻璃 Hero 核心控制卡片
 // -----------------------------------------------------------------------------
+
+@Composable
+private fun HomeStatusCard(
+    isVpnRunning: Boolean,
+    isShizukuConnected: Boolean,
+    modeName: String,
+    tlsWrapperActive: Boolean,
+    onToggle: () -> Unit
+) {
+    val colors = MiuixTheme.colorScheme
+    val foreground = colors.onSurface
+    val activeContainer = if (isSystemInDarkTheme()) Color(0xFF1A3825) else Color(0xFFDFFAE4)
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(168.dp),
+        colors = CardDefaults.defaultColors(
+            color = if (isVpnRunning) activeContainer else colors.surfaceContainer
+        ),
+        onClick = onToggle,
+        pressFeedbackType = PressFeedbackType.Tilt
+    ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            Icon(
+                imageVector = AppIcons.Security,
+                contentDescription = null,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .offset(22.dp, 24.dp)
+                    .size(116.dp),
+                tint = if (isVpnRunning) Color(0xFF36D167) else colors.primary.copy(alpha = 0.14f)
+            )
+
+            Column(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(horizontal = 18.dp, vertical = 16.dp)
+            ) {
+                Text(
+                    text = if (isVpnRunning) "分流保护生效中" else "分流服务未连接",
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = foreground
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = if (isVpnRunning) "点击卡片停止分流" else "点击卡片接管游戏流量",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = foreground.copy(alpha = 0.72f)
+                )
+            }
+
+            Row(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(18.dp, 14.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = modeName,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = foreground
+                )
+                Text(
+                    text = if (tlsWrapperActive) "TLS 已启用" else "TLS 未启用",
+                    fontSize = 12.sp,
+                    color = foreground.copy(alpha = 0.68f)
+                )
+            }
+
+            if (isShizukuConnected) {
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(16.dp, 14.dp)
+                        .clip(CircleShape)
+                        .background(colors.primaryContainer)
+                        .padding(horizontal = 9.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(6.dp)
+                            .clip(CircleShape)
+                            .background(colors.primary)
+                    )
+                    Text(
+                        text = "Shizuku",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = colors.onPrimaryContainer
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HomeActionCard(
+    title: String,
+    subtitle: String,
+    primaryText: String,
+    onPrimaryClick: () -> Unit,
+    secondaryText: String,
+    onSecondaryClick: () -> Unit,
+    tertiaryText: String? = null,
+    onTertiaryClick: (() -> Unit)? = null
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        insideMargin = PaddingValues(0.dp)
+    ) {
+        BasicComponent(
+            title = title,
+            summary = subtitle
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 12.dp, end = 12.dp, bottom = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            TextButton(
+                text = primaryText,
+                onClick = onPrimaryClick,
+                modifier = Modifier.weight(if (tertiaryText == null) 1f else 1.05f),
+                colors = ButtonDefaults.textButtonColorsPrimary()
+            )
+            TextButton(
+                text = secondaryText,
+                onClick = onSecondaryClick,
+                modifier = Modifier.weight(if (tertiaryText == null) 1f else 0.72f)
+            )
+            if (tertiaryText != null && onTertiaryClick != null) {
+                TextButton(
+                    text = tertiaryText,
+                    onClick = onTertiaryClick,
+                    modifier = Modifier.weight(1.35f)
+                )
+            }
+        }
+    }
+}
 
 @Composable
 fun LiquidGlassHeroCard(

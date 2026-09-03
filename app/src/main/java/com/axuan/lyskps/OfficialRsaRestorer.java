@@ -5,9 +5,14 @@ import android.content.Context;
 import android.content.ServiceConnection;
 import android.content.pm.PackageManager;
 import android.os.IBinder;
+import android.os.Handler;
+import android.os.Looper;
 
 import java.io.File;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import rikka.shizuku.Shizuku;
@@ -18,6 +23,9 @@ public final class OfficialRsaRestorer {
     public static final int MODE_DELETE_IL2CPP = 2;
     public static final int MODE_APPLY_PRIVATE = 3;
     public static final int MODE_RESTORE_BACKUP = 4;
+    private static final Set<Operation> ACTIVE_OPERATIONS = Collections.newSetFromMap(
+            new ConcurrentHashMap<Operation, Boolean>());
+    private static final Handler MAIN = new Handler(Looper.getMainLooper());
 
     public interface Callback {
         void done(boolean success, String detail);
@@ -40,7 +48,7 @@ public final class OfficialRsaRestorer {
             execute(context, MODE_RESTORE_BACKUP, backup.off2048, backup.off1024,
                     backup.block2048, backup.block1024, callback);
         } catch (Throwable t) {
-            callback(callback, false, message(t));
+            complete(callback, false, "读取 RSA 自动备份失败：" + message(t));
         }
     }
 
@@ -48,27 +56,29 @@ public final class OfficialRsaRestorer {
                                 byte[] replacement2048, byte[] replacement1024,
                                 Callback callback) {
         Context app = context.getApplicationContext();
+        VpnLog.init(app);
+        VpnLog.i("RSA", "提交 Shizuku 操作：" + actionName(mode));
         if (mode != MODE_RESTORE_BLOCKS && mode != MODE_DELETE_IL2CPP
                 && mode != MODE_APPLY_PRIVATE && mode != MODE_RESTORE_BACKUP) {
-            callback(callback, false, "未知 RSA 操作");
+            complete(callback, false, "未知 RSA 操作");
             return;
         }
         if ((mode == MODE_APPLY_PRIVATE || mode == MODE_RESTORE_BACKUP)
                 && (replacement2048 == null || replacement1024 == null)) {
-            callback(callback, false, "私服 RSA 数据为空");
+            complete(callback, false, "私服 RSA 数据为空");
             return;
         }
         try {
             if (!Shizuku.pingBinder()) {
-                callback(callback, false, "Shizuku 未运行或 Binder 尚未就绪");
+                complete(callback, false, "Shizuku 未运行或 Binder 尚未就绪");
                 return;
             }
             if (Shizuku.isPreV11() || Shizuku.getVersion() < 10) {
-                callback(callback, false, "Shizuku 版本过旧，请升级 Shizuku");
+                complete(callback, false, "Shizuku 版本过旧，请升级 Shizuku");
                 return;
             }
             if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
-                callback(callback, false, "尚未授予 Shizuku 权限");
+                complete(callback, false, "尚未授予 Shizuku 权限");
                 return;
             }
 
@@ -77,12 +87,18 @@ public final class OfficialRsaRestorer {
                     .daemon(false)
                     .processNameSuffix("rsa_file")
                     .debuggable(false)
-                    .version(4);
+                    .version(5);
             Operation operation = new Operation(app, args, mode, off2048, off1024,
                     replacement2048, replacement1024, callback);
-            Shizuku.bindUserService(args, operation);
+            ACTIVE_OPERATIONS.add(operation);
+            try {
+                Shizuku.bindUserService(args, operation);
+                MAIN.postDelayed(operation.timeoutTask, 30_000L);
+            } catch (Throwable t) {
+                operation.finish(false, "启动 Shizuku 服务失败：" + message(t));
+            }
         } catch (Throwable t) {
-            callback(callback, false, "启动 Shizuku 服务失败：" + message(t));
+            complete(callback, false, "启动 Shizuku 服务失败：" + message(t));
         }
     }
 
@@ -96,6 +112,7 @@ public final class OfficialRsaRestorer {
         private final byte[] replacement1024;
         private final Callback callback;
         private final AtomicBoolean finished = new AtomicBoolean();
+        private final Runnable timeoutTask = this::timeout;
 
         Operation(Context app, Shizuku.UserServiceArgs args, int mode, long off2048, long off1024,
                   byte[] replacement2048, byte[] replacement1024, Callback callback) {
@@ -111,10 +128,12 @@ public final class OfficialRsaRestorer {
 
         @Override
         public void onServiceConnected(ComponentName name, IBinder binder) {
+            MAIN.removeCallbacks(timeoutTask);
             if (binder == null || !binder.pingBinder()) {
                 finish(false, "Shizuku 返回了无效的 UserService Binder");
                 return;
             }
+            VpnLog.i("RSA", "Shizuku UserService 已连接，开始执行：" + actionName(mode));
             new Thread(() -> {
                 try {
                     IShizukuRsaService service = IShizukuRsaService.Stub.asInterface(binder);
@@ -163,10 +182,31 @@ public final class OfficialRsaRestorer {
 
         private void finish(boolean success, String detail) {
             if (!finished.compareAndSet(false, true)) return;
+            MAIN.removeCallbacks(timeoutTask);
+            ACTIVE_OPERATIONS.remove(this);
             VpnLog.i(success ? "RSA" : "ERROR", detail);
             try { Shizuku.unbindUserService(args, this, true); }
             catch (Throwable ignored) {}
             callback(callback, success, detail);
+        }
+
+        private void timeout() {
+            finish(false, "等待 Shizuku UserService 超时，操作未执行");
+        }
+    }
+
+    private static void complete(Callback callback, boolean success, String detail) {
+        VpnLog.i(success ? "RSA" : "ERROR", detail);
+        callback(callback, success, detail);
+    }
+
+    private static String actionName(int mode) {
+        switch (mode) {
+            case MODE_APPLY_PRIVATE: return "立即补丁 RSA";
+            case MODE_RESTORE_BACKUP: return "从自动备份还原 RSA";
+            case MODE_RESTORE_BLOCKS: return "恢复官方 RSA 公钥";
+            case MODE_DELETE_IL2CPP: return "删除并重建 il2cpp";
+            default: return "未知操作 " + mode;
         }
     }
 

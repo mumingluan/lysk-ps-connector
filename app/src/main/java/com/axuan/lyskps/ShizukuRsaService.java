@@ -44,6 +44,8 @@ public final class ShizukuRsaService extends IShizukuRsaService.Stub {
         try {
             File metadata = new File(META);
             if (!metadata.isFile()) return fail("找不到 global-metadata.dat，请先让游戏生成该文件");
+            String stopped = stopGame();
+            if (stopped != null) return fail(stopped);
             String result = writePair(metadata, off2048, replacement2048,
                     off1024, replacement1024);
             if (!"ok".equals(result) && !"already".equals(result)) return fail(result);

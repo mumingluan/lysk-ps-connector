@@ -7,6 +7,26 @@ import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.unit.dp
 
 internal object AppIcons {
+    val Launch: ImageVector by lazy {
+        ImageVector.Builder(
+            name = "Launch",
+            defaultWidth = 24.dp,
+            defaultHeight = 24.dp,
+            viewportWidth = 24f,
+            viewportHeight = 24f
+        ).apply {
+            path(fill = SolidColor(Color.Black)) {
+                moveTo(8f, 5.2f)
+                curveTo(8f, 4.18f, 9.12f, 3.56f, 9.98f, 4.11f)
+                lineTo(20.7f, 10.91f)
+                curveTo(21.5f, 11.42f, 21.5f, 12.58f, 20.7f, 13.09f)
+                lineTo(9.98f, 19.89f)
+                curveTo(9.12f, 20.44f, 8f, 19.82f, 8f, 18.8f)
+                close()
+            }
+        }.build()
+    }
+
     val Home: ImageVector by lazy {
         ImageVector.Builder(
             name = "Home",
