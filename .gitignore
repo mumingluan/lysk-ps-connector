@@ -5,6 +5,7 @@ local.properties
 
 # Gradle / Android outputs
 .gradle/
+.kotlin/
 **/build/
 dist/
 temp_build.log

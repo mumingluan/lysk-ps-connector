@@ -1,5 +1,13 @@
 # Third-party notices
 
+## compose-miuix-ui Liquid Glass Navigation
+
+- Project: https://github.com/compose-miuix-ui/miuix
+- Component: `IosLiquidGlassNavigationBar` and its liquid/interaction helpers
+- License: Apache License 2.0, https://www.apache.org/licenses/LICENSE-2.0
+
+Copyright 2026 compose-miuix-ui contributors
+
 ## tun2proxy
 
 - Project: https://github.com/tun2proxy/tun2proxy
