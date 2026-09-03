@@ -50,7 +50,9 @@ import top.yukonga.miuix.kmp.blur.rememberLayerBackdrop
 import top.yukonga.miuix.kmp.preference.*
 import top.yukonga.miuix.kmp.theme.ColorSchemeMode
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.theme.ThemeColorSpec
 import top.yukonga.miuix.kmp.theme.ThemeController
+import top.yukonga.miuix.kmp.theme.ThemePaletteStyle
 import top.yukonga.miuix.kmp.window.WindowDialog
 import java.io.InputStream
 import java.io.OutputStream
@@ -95,6 +97,31 @@ class InfoActivity : ComponentActivity() {
                 } catch (t: Throwable) {
                     runOnUiThread {
                         showToast("NLS ZIP 解析失败：" + (t.message ?: t.javaClass.simpleName))
+                    }
+                }
+            }.start()
+        }
+    }
+
+    private var pendingRsaImportBits = 0
+    private val importRsaPemLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
+        val uri: Uri? = res.data?.data
+        val expectedBits = pendingRsaImportBits
+        pendingRsaImportBits = 0
+        if (res.resultCode == RESULT_OK && uri != null && expectedBits != 0) {
+            Thread {
+                try {
+                    val result = contentResolver.openInputStream(uri)?.use { input ->
+                        RsaPublicKeyImporter.importPem(
+                            getSharedPreferences(Config.PREFS, Context.MODE_PRIVATE),
+                            input,
+                            expectedBits
+                        )
+                    } ?: throw IllegalArgumentException("无法读取所选 PEM 文件")
+                    runOnUiThread { showToast("$result，下次立即补丁时生效") }
+                } catch (t: Throwable) {
+                    runOnUiThread {
+                        showToast("导入 PEM 失败：" + (t.message ?: t.javaClass.simpleName))
                     }
                 }
             }.start()
@@ -190,7 +217,13 @@ class InfoActivity : ComponentActivity() {
         setContent {
             val isDark = isSystemInDarkTheme()
             val themeController = remember(isDark) {
-                ThemeController(ColorSchemeMode.MonetSystem, isDark = isDark)
+                ThemeController(
+                    ColorSchemeMode.System,
+                    keyColor = null,
+                    isDark = isDark,
+                    paletteStyle = ThemePaletteStyle.TonalSpot,
+                    colorSpec = ThemeColorSpec.Spec2025
+                )
             }
             LaunchedEffect(isDark) {
                 WindowInsetsControllerCompat(window, window.decorView).apply {
@@ -211,6 +244,8 @@ class InfoActivity : ComponentActivity() {
                     onLaunchGame = { launchGame() },
                     onPatchRsa = { requestShizukuOperation(OfficialRsaRestorer.MODE_APPLY_PRIVATE) },
                     onRestoreRsa = { requestShizukuOperation(it) },
+                    onImportRsaPem = { selectRsaPem(it) },
+                    onRestoreBuiltInRsaPem = { restoreBuiltInRsaPem() },
                     onSelectNlsZip = { selectNlsZip() },
                     onRestoreNls = { requestShizukuOperation(it) },
                     onExportCrt = { exportCaCrt() },
@@ -414,6 +449,21 @@ class InfoActivity : ComponentActivity() {
         selectNlsZipLauncher.launch(intent)
     }
 
+    private fun selectRsaPem(bits: Int) {
+        pendingRsaImportBits = bits
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/x-pem-file", "text/plain", "application/octet-stream"))
+        }
+        importRsaPemLauncher.launch(intent)
+    }
+
+    private fun restoreBuiltInRsaPem() {
+        Config.restoreDefaultRsaBlocks(getSharedPreferences(Config.PREFS, Context.MODE_PRIVATE))
+        showToast("已还原内置 2048/1024 位 PEM")
+    }
+
     private fun exportCaCrt() {
         val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
@@ -493,6 +543,8 @@ fun MainScreen(
     onLaunchGame: () -> Unit,
     onPatchRsa: () -> Unit,
     onRestoreRsa: (Int) -> Unit,
+    onImportRsaPem: (Int) -> Unit,
+    onRestoreBuiltInRsaPem: () -> Unit,
     onSelectNlsZip: () -> Unit,
     onRestoreNls: (Int) -> Unit,
     onExportCrt: () -> Unit,
@@ -544,7 +596,7 @@ fun MainScreen(
                 title = selectedTab.label,
                 actions = {
                     Text(
-                        text = "3.0",
+                        text = "3.1",
                         color = MiuixTheme.colorScheme.primary,
                         fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.padding(horizontal = 16.dp)
@@ -601,7 +653,9 @@ fun MainScreen(
                             buttonText = "立即补丁",
                             onClick = onPatchRsa,
                             onSecondaryClick = { activeDialog = AppDialog.RSA_OPTIONS },
-                            secondaryText = "还原"
+                            secondaryText = "还原",
+                            onTertiaryClick = { activeDialog = AppDialog.RSA_KEY_OPTIONS },
+                            tertiaryText = "导入新公钥"
                         )
 
                         LiquidGlassActionCard(
@@ -906,6 +960,8 @@ fun MainScreen(
         onDismiss = { activeDialog = null },
         onDialogChange = { activeDialog = it },
         onRestoreRsa = onRestoreRsa,
+        onImportRsaPem = onImportRsaPem,
+        onRestoreBuiltInRsaPem = onRestoreBuiltInRsaPem,
         onRestoreNls = onRestoreNls,
         onRegenerateCert = onRegenerateCert
     )
@@ -914,6 +970,8 @@ fun MainScreen(
 private enum class AppDialog {
     RSA_OPTIONS,
     RSA_DELETE_CONFIRM,
+    RSA_KEY_OPTIONS,
+    RSA_KEY_RESET_CONFIRM,
     NLS_OPTIONS,
     NLS_DELETE_CONFIRM,
     TLS_REGENERATE_CONFIRM
@@ -925,12 +983,16 @@ private fun AppDialogHost(
     onDismiss: () -> Unit,
     onDialogChange: (AppDialog) -> Unit,
     onRestoreRsa: (Int) -> Unit,
+    onImportRsaPem: (Int) -> Unit,
+    onRestoreBuiltInRsaPem: () -> Unit,
     onRestoreNls: (Int) -> Unit,
     onRegenerateCert: () -> Unit
 ) {
     val title = when (activeDialog) {
         AppDialog.RSA_OPTIONS -> "恢复 RSA"
         AppDialog.RSA_DELETE_CONFIRM -> "重建 il2cpp？"
+        AppDialog.RSA_KEY_OPTIONS -> "导入新公钥"
+        AppDialog.RSA_KEY_RESET_CONFIRM -> "还原内置 PEM？"
         AppDialog.NLS_OPTIONS -> "还原 NLS 语音资源"
         AppDialog.NLS_DELETE_CONFIRM -> "删除 NLS 资源？"
         AppDialog.TLS_REGENERATE_CONFIRM -> "重新生成 TLS 身份凭据？"
@@ -939,6 +1001,8 @@ private fun AppDialogHost(
     val summary = when (activeDialog) {
         AppDialog.RSA_OPTIONS -> "通过 Shizuku 选择恢复方式"
         AppDialog.RSA_DELETE_CONFIRM -> "将停止恋与深空并删除 files/il2cpp 目录，游戏下次启动时会自动重建。"
+        AppDialog.RSA_KEY_OPTIONS -> "分别选择 2048 位和 1024 位 RSA 公钥 PEM"
+        AppDialog.RSA_KEY_RESET_CONFIRM -> "将清除已导入的两把公钥，恢复应用内置的 2048/1024 位 PEM。"
         AppDialog.NLS_OPTIONS -> "选择从备份恢复，或移除已安装的资源文件"
         AppDialog.NLS_DELETE_CONFIRM -> "将停止游戏并删除上次安装记录对应的 ZIP 与 NX 文件。"
         AppDialog.TLS_REGENERATE_CONFIRM -> "旧 CA 将立即失效，需要重新向系统安装并信任新导出的 CA 证书。"
@@ -996,6 +1060,54 @@ private fun AppDialogHost(
                     onConfirm = {
                         onDismiss()
                         onRestoreRsa(OfficialRsaRestorer.MODE_DELETE_IL2CPP)
+                    }
+                )
+            }
+
+            AppDialog.RSA_KEY_OPTIONS -> {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    insideMargin = PaddingValues(0.dp)
+                ) {
+                    BasicComponent(
+                        title = "导入 2048 位 PEM",
+                        summary = "选择一份 2048 位 RSA 公钥文件",
+                        onClick = {
+                            onDismiss()
+                            onImportRsaPem(2048)
+                        }
+                    )
+                    BasicComponent(
+                        title = "导入 1024 位 PEM",
+                        summary = "选择一份 1024 位 RSA 公钥文件",
+                        onClick = {
+                            onDismiss()
+                            onImportRsaPem(1024)
+                        }
+                    )
+                    BasicComponent(
+                        title = "还原内置 PEM",
+                        titleColor = BasicComponentDefaults.titleColor(MiuixTheme.colorScheme.error),
+                        summary = "恢复应用随附的两把公钥",
+                        onClick = { onDialogChange(AppDialog.RSA_KEY_RESET_CONFIRM) }
+                    )
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+                TextButton(
+                    text = "取消",
+                    onClick = onDismiss,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
+            AppDialog.RSA_KEY_RESET_CONFIRM -> {
+                DialogActionButtons(
+                    confirmText = "还原内置 PEM",
+                    destructive = false,
+                    onDismiss = onDismiss,
+                    onConfirm = {
+                        onDismiss()
+                        onRestoreBuiltInRsaPem()
                     }
                 )
             }
@@ -1269,7 +1381,9 @@ fun LiquidGlassActionCard(
     buttonText: String,
     onClick: () -> Unit,
     onSecondaryClick: () -> Unit,
-    secondaryText: String
+    secondaryText: String,
+    onTertiaryClick: (() -> Unit)? = null,
+    tertiaryText: String? = null
 ) {
     Card(modifier = modifier) {
         Column(modifier = Modifier.padding(14.dp)) {
@@ -1303,6 +1417,16 @@ fun LiquidGlassActionCard(
                 onClick = onSecondaryClick,
                 modifier = Modifier.fillMaxWidth()
             )
+            Spacer(modifier = Modifier.height(4.dp))
+            if (tertiaryText != null && onTertiaryClick != null) {
+                TextButton(
+                    text = tertiaryText,
+                    onClick = onTertiaryClick,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            } else {
+                Spacer(modifier = Modifier.height(48.dp))
+            }
         }
     }
 }
