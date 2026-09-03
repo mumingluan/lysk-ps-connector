@@ -8,8 +8,15 @@ import android.content.pm.PackageManager;
 import android.os.IBinder;
 import android.os.ParcelFileDescriptor;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import rikka.shizuku.Shizuku;
@@ -144,13 +151,19 @@ final class NlsResourceManager {
                         temporaryZip = null;
                         temporaryNx = null;
                     }
-                } else if (mode == MODE_RESTORE_BACKUP) {
-                    try (ParcelFileDescriptor zip = openRead(backupFile(app, zipName));
-                         ParcelFileDescriptor nx = openRead(backupFile(app, nxName))) {
-                        result = service.restoreNls(zip, nx, zipName, nxName);
+                    if (result != null && result.startsWith("OK\n")) {
+                        replacePairThroughShizuku(prepared.zip, prepared.nx, zipName, nxName);
+                        result = "OK\nNLS ZIP/NX 已替换并通过 shell 回读校验";
                     }
+                } else if (mode == MODE_RESTORE_BACKUP) {
+                    replacePairThroughShizuku(backupFile(app, zipName),
+                            backupFile(app, nxName), zipName, nxName);
+                    result = "OK\nNLS ZIP/NX 已从 connector 私有备份还原";
                 } else {
-                    result = service.deleteNls(zipName, nxName);
+                    runRemote(new String[]{"sh", "-c",
+                            "am force-stop com.papegames.lysk.cn && rm -f \"$1\" \"$2\"",
+                            "sh", targetZip(zipName), targetNx(nxName)}, null);
+                    result = "OK\nNLS ZIP/NX 已删除";
                 }
                 boolean ok = result != null && result.startsWith("OK\n");
                 String detail = result == null ? "Shizuku 服务没有返回结果"
@@ -219,6 +232,88 @@ final class NlsResourceManager {
     private static void saveNames(Context context, String zipName, String nxName) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                 .putString(KEY_ZIP, zipName).putString(KEY_NX, nxName).apply();
+    }
+
+    private static void replacePairThroughShizuku(File zip, File nx,
+                                                   String zipName, String nxName) throws Exception {
+        validateNames(zipName, nxName);
+        if (!zip.isFile() || zip.length() <= 0 || !nx.isFile() || nx.length() <= 0) {
+            throw new IOException("NLS ZIP/NX 源文件不完整");
+        }
+        runRemote(new String[]{"am", "force-stop", "com.papegames.lysk.cn"}, null);
+        String token = Long.toUnsignedString(System.nanoTime());
+        replaceOne(zip, "/storage/emulated/0/Download/LYSKPS_" + token + "_" + zipName,
+                targetZip(zipName));
+        replaceOne(nx, "/storage/emulated/0/Download/LYSKPS_" + token + "_" + nxName,
+                targetNx(nxName));
+    }
+
+    private static void replaceOne(File source, String stage, String target) throws Exception {
+        String command = "{ rm -f \"$1\"; cat > \"$1\"; chmod 660 \"$1\"; "
+                + "mv -f \"$1\" \"$2\"; test -s \"$2\"; } 2>&1";
+        try (InputStream input = new FileInputStream(source)) {
+            runRemote(new String[]{"sh", "-c", command, "sh", stage, target}, input);
+        } catch (Throwable t) {
+            try { runRemote(new String[]{"rm", "-f", stage}, null); }
+            catch (Throwable ignored) {}
+            throw t;
+        }
+    }
+
+    /** Invokes Shizuku's server-side process API retained for API compatibility. */
+    private static String runRemote(String[] command, InputStream stdin) throws Exception {
+        Method method = Shizuku.class.getDeclaredMethod("newProcess",
+                String[].class, String[].class, String.class);
+        method.setAccessible(true);
+        final Process process;
+        try {
+            process = (Process) method.invoke(null, command, null, null);
+        } catch (InvocationTargetException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof Exception) throw (Exception) cause;
+            throw e;
+        }
+        try {
+            try (OutputStream output = process.getOutputStream()) {
+                if (stdin != null) copy(stdin, output);
+            }
+            ByteArrayOutputStream captured = new ByteArrayOutputStream();
+            try (InputStream output = process.getInputStream();
+                 InputStream error = process.getErrorStream()) {
+                copy(output, captured);
+                copy(error, captured);
+            }
+            int code = process.waitFor();
+            String text = new String(captured.toByteArray(), StandardCharsets.UTF_8).trim();
+            if (code != 0) throw new IOException("Shizuku shell exit=" + code
+                    + (text.isEmpty() ? "" : "：" + text));
+            return text;
+        } finally {
+            process.destroy();
+        }
+    }
+
+    private static void copy(InputStream input, OutputStream output) throws IOException {
+        byte[] buffer = new byte[128 * 1024];
+        int count;
+        while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
+    }
+
+    private static void validateNames(String zipName, String nxName) {
+        if (zipName == null || nxName == null || !zipName.matches("[0-9]+\\.zip")
+                || !nxName.matches("[0-9]+\\.nx")
+                || !zipName.substring(0, zipName.length() - 4)
+                .equals(nxName.substring(0, nxName.length() - 3))) {
+            throw new IllegalArgumentException("NLS ZIP/NX 文件名不安全或不匹配");
+        }
+    }
+
+    private static String targetZip(String name) {
+        return "/storage/emulated/0/Android/data/com.papegames.lysk.cn/files/XFileZip/" + name;
+    }
+
+    private static String targetNx(String name) {
+        return "/storage/emulated/0/Android/data/com.papegames.lysk.cn/files/XPackage/" + name;
     }
 
     private static String[] storedNames(Context context) {

@@ -3,7 +3,6 @@ package com.axuan.lyskps;
 import android.content.Context;
 import android.os.ParcelFileDescriptor;
 import android.system.Os;
-import android.system.StructStat;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -24,6 +23,7 @@ public final class ShizukuRsaService extends IShizukuRsaService.Stub {
     private static final String GAME_FILES = "/storage/emulated/0/Android/data/" + TARGET + "/files";
     private static final String XFILEZIP = GAME_FILES + "/XFileZip";
     private static final String XPACKAGE = GAME_FILES + "/XPackage";
+    private static final String SHARED_STAGE = "/storage/emulated/0/Download";
     private static final long OFF_2048 = 0x22aee2fL;
     private static final long OFF_1024 = 0x22af00fL;
     private Context context;
@@ -99,8 +99,11 @@ public final class ShizukuRsaService extends IShizukuRsaService.Stub {
                 copyFileToDescriptor(targetZip, backupZip);
                 copyFileToDescriptor(targetNx, backupNx);
             }
-            replacePair(sourceZip, sourceNx, targetZip, targetNx);
-            return ok("NLS ZIP/NX 已替换并通过回读大小校验");
+            // Actual replacement is performed by a Shizuku server-side remote
+            // process in the client. A UserService has uid 2000 but retains an
+            // app_process scoped-storage mount and cannot move its own staged
+            // files into another app's Android/data directory.
+            return ok("NLS 原文件已校验并完成备份");
         } catch (Throwable t) {
             return fail(t.getClass().getSimpleName() + ": " + safeMessage(t));
         } finally {
@@ -137,10 +140,11 @@ public final class ShizukuRsaService extends IShizukuRsaService.Stub {
             if (stopped != null) return fail(stopped);
             File zip = new File(XFILEZIP, zipName);
             File nx = new File(XPACKAGE, nxName);
-            boolean zipDeleted = !zip.exists() || zip.delete();
-            boolean nxDeleted = !nx.exists() || nx.delete();
-            if (!zipDeleted || !nxDeleted || zip.exists() || nx.exists()) {
-                return fail("删除 NLS ZIP/NX 失败");
+            CommandResult removed = runCommand("rm", "-f",
+                    zip.getAbsolutePath(), nx.getAbsolutePath());
+            if (removed.code != 0 || zip.exists() || nx.exists()) {
+                return fail("删除 NLS ZIP/NX 失败，exit=" + removed.code
+                        + suffix(removed.output));
             }
             return ok("NLS ZIP/NX 已删除；游戏后续可重新下载或展开官方资源");
         } catch (Throwable t) {
@@ -247,41 +251,73 @@ public final class ShizukuRsaService extends IShizukuRsaService.Stub {
 
     private static void replacePair(ParcelFileDescriptor sourceZip, ParcelFileDescriptor sourceNx,
                                     File targetZip, File targetNx) throws Exception {
-        StructStat zipStat = Os.stat(targetZip.getAbsolutePath());
-        StructStat nxStat = Os.stat(targetNx.getAbsolutePath());
-        File stagedZip = new File(targetZip.getParentFile(), targetZip.getName() + ".connector-new");
-        File stagedNx = new File(targetNx.getParentFile(), targetNx.getName() + ".connector-new");
-        stagedZip.delete(); stagedNx.delete();
+        String token = Long.toUnsignedString(System.nanoTime());
+        // Keep the names non-hidden. Android's emulated-storage layer applies
+        // different policy to dot files for a Shizuku UserService even though
+        // both paths are owned by uid 2000.
+        File stagedZip = new File(SHARED_STAGE, "LYSKPS_" + token + "_" + targetZip.getName());
+        File stagedNx = new File(SHARED_STAGE, "LYSKPS_" + token + "_" + targetNx.getName());
+        removeStages(stagedZip, stagedNx);
         try {
-            copyDescriptorToFile(sourceZip, stagedZip);
-            copyDescriptorToFile(sourceNx, stagedNx);
-            applyOwnership(stagedZip, zipStat);
-            applyOwnership(stagedNx, nxStat);
-            Os.rename(stagedZip.getAbsolutePath(), targetZip.getAbsolutePath());
-            Os.rename(stagedNx.getAbsolutePath(), targetNx.getAbsolutePath());
+            stageDescriptorWithShell(sourceZip, stagedZip);
+            stageDescriptorWithShell(sourceNx, stagedNx);
+            // The Java Os.rename call is denied by Android's FUSE policy in a
+            // Shizuku UserService. The platform shell's mv command is allowed
+            // to move the same shared-storage inode over the exact target; it
+            // was also verified on the target device. Avoid a shell string so
+            // no filename can be interpreted as command syntax.
+            moveOrThrow(stagedZip, targetZip);
+            moveOrThrow(stagedNx, targetNx);
             if (!targetZip.isFile() || !targetNx.isFile()
                     || targetZip.length() <= 0 || targetNx.length() <= 0) {
                 throw new IllegalStateException("替换后的 NLS 文件大小异常");
             }
         } finally {
-            stagedZip.delete(); stagedNx.delete();
+            removeStages(stagedZip, stagedNx);
         }
     }
 
-    private static void copyDescriptorToFile(ParcelFileDescriptor source, File destination)
+    private static void stageDescriptorWithShell(ParcelFileDescriptor source, File destination)
             throws Exception {
+        // Creating the file with Java places it in app_process' scoped-storage
+        // view; a child toybox process then cannot even stat that pathname.
+        // Let the shell child create it in its own view while the service feeds
+        // the descriptor through stdin.
+        Process process = new ProcessBuilder("sh", "-c", "cat > \"$1\"", "sh",
+                destination.getAbsolutePath()).redirectErrorStream(true).start();
         try (InputStream input = new FileInputStream(source.getFileDescriptor());
-             FileOutputStream output = new FileOutputStream(destination)) {
+             OutputStream output = process.getOutputStream()) {
             copy(input, output);
-            output.flush();
-            output.getFD().sync();
         }
-        if (destination.length() <= 0) throw new IllegalStateException("NLS 输入文件为空");
+        ByteArrayOutputStream captured = new ByteArrayOutputStream();
+        try (InputStream output = process.getInputStream()) {
+            copy(output, captured);
+        }
+        int code = process.waitFor();
+        String message = new String(captured.toByteArray(), StandardCharsets.UTF_8).trim();
+        if (code != 0) {
+            throw new IllegalStateException("创建暂存文件失败，exit=" + code + suffix(message));
+        }
+        CommandResult chmod = runCommand("chmod", "660", destination.getAbsolutePath());
+        if (chmod.code != 0) {
+            throw new IllegalStateException("设置暂存文件权限失败，exit=" + chmod.code
+                    + suffix(chmod.output));
+        }
     }
 
-    private static void applyOwnership(File file, StructStat original) throws Exception {
-        Os.chown(file.getAbsolutePath(), original.st_uid, original.st_gid);
-        Os.chmod(file.getAbsolutePath(), original.st_mode & 0777);
+    private static void removeStages(File first, File second) {
+        try {
+            runCommand("rm", "-f", first.getAbsolutePath(), second.getAbsolutePath());
+        } catch (Throwable ignored) {}
+    }
+
+    private static void moveOrThrow(File source, File target) throws Exception {
+        CommandResult moved = runCommand("mv", "-f",
+                source.getAbsolutePath(), target.getAbsolutePath());
+        if (moved.code != 0 || source.exists() || !target.isFile()) {
+            throw new IllegalStateException("mv " + target.getName() + " 失败，exit="
+                    + moved.code + suffix(moved.output));
+        }
     }
 
     private static void copy(InputStream input, OutputStream output) throws Exception {
