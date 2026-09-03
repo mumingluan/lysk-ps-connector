@@ -6,6 +6,8 @@ import android.content.ServiceConnection;
 import android.content.pm.PackageManager;
 import android.os.IBinder;
 
+import java.io.File;
+import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import rikka.shizuku.Shizuku;
@@ -15,6 +17,7 @@ public final class OfficialRsaRestorer {
     public static final int MODE_RESTORE_BLOCKS = 1;
     public static final int MODE_DELETE_IL2CPP = 2;
     public static final int MODE_APPLY_PRIVATE = 3;
+    public static final int MODE_RESTORE_BACKUP = 4;
 
     public interface Callback {
         void done(boolean success, String detail);
@@ -31,16 +34,26 @@ public final class OfficialRsaRestorer {
                 replacement2048, replacement1024, callback);
     }
 
+    public static void restoreBackup(Context context, Callback callback) {
+        try {
+            RsaBackupStore.Backup backup = RsaBackupStore.load(context.getApplicationContext());
+            execute(context, MODE_RESTORE_BACKUP, backup.off2048, backup.off1024,
+                    backup.block2048, backup.block1024, callback);
+        } catch (Throwable t) {
+            callback(callback, false, message(t));
+        }
+    }
+
     private static void execute(Context context, int mode, long off2048, long off1024,
                                 byte[] replacement2048, byte[] replacement1024,
                                 Callback callback) {
         Context app = context.getApplicationContext();
         if (mode != MODE_RESTORE_BLOCKS && mode != MODE_DELETE_IL2CPP
-                && mode != MODE_APPLY_PRIVATE) {
+                && mode != MODE_APPLY_PRIVATE && mode != MODE_RESTORE_BACKUP) {
             callback(callback, false, "未知 RSA 操作");
             return;
         }
-        if (mode == MODE_APPLY_PRIVATE
+        if ((mode == MODE_APPLY_PRIVATE || mode == MODE_RESTORE_BACKUP)
                 && (replacement2048 == null || replacement1024 == null)) {
             callback(callback, false, "私服 RSA 数据为空");
             return;
@@ -64,8 +77,8 @@ public final class OfficialRsaRestorer {
                     .daemon(false)
                     .processNameSuffix("rsa_file")
                     .debuggable(false)
-                    .version(3);
-            Operation operation = new Operation(args, mode, off2048, off1024,
+                    .version(4);
+            Operation operation = new Operation(app, args, mode, off2048, off1024,
                     replacement2048, replacement1024, callback);
             Shizuku.bindUserService(args, operation);
         } catch (Throwable t) {
@@ -74,6 +87,7 @@ public final class OfficialRsaRestorer {
     }
 
     private static final class Operation implements ServiceConnection {
+        private final Context app;
         private final Shizuku.UserServiceArgs args;
         private final int mode;
         private final long off2048;
@@ -83,8 +97,9 @@ public final class OfficialRsaRestorer {
         private final Callback callback;
         private final AtomicBoolean finished = new AtomicBoolean();
 
-        Operation(Shizuku.UserServiceArgs args, int mode, long off2048, long off1024,
+        Operation(Context app, Shizuku.UserServiceArgs args, int mode, long off2048, long off1024,
                   byte[] replacement2048, byte[] replacement1024, Callback callback) {
+            this.app = app;
             this.args = args;
             this.mode = mode;
             this.off2048 = off2048;
@@ -103,13 +118,38 @@ public final class OfficialRsaRestorer {
             new Thread(() -> {
                 try {
                     IShizukuRsaService service = IShizukuRsaService.Stub.asInterface(binder);
-                    String result = mode == MODE_APPLY_PRIVATE
-                            ? service.patch(off2048, off1024, replacement2048, replacement1024)
-                            : service.restore(mode == MODE_DELETE_IL2CPP);
+                    String backupDetail = "";
+                    if (mode == MODE_APPLY_PRIVATE) {
+                        File backupPath = RsaBackupStore.path(app);
+                        if (!backupPath.isFile()) {
+                            byte[] current = service.readRsaBlocks(off2048, off1024);
+                            boolean firstPatched = Arrays.equals(
+                                    Arrays.copyOfRange(current, 0, replacement2048.length),
+                                    replacement2048);
+                            boolean secondPatched = Arrays.equals(
+                                    Arrays.copyOfRange(current, replacement2048.length, current.length),
+                                    replacement1024);
+                            if (firstPatched || secondPatched) {
+                                finish(false, "当前 RSA 已全部或部分补丁，但找不到修补前备份；拒绝创建无效备份");
+                                return;
+                            }
+                            RsaBackupStore.saveIfAbsent(app, off2048, off1024, current);
+                            backupDetail = "已保存修补前 RSA 备份；";
+                        } else {
+                            RsaBackupStore.load(app);
+                            backupDetail = "已保留现有 RSA 备份；";
+                        }
+                    }
+                    String result;
+                    if (mode == MODE_APPLY_PRIVATE || mode == MODE_RESTORE_BACKUP) {
+                        result = service.patch(off2048, off1024, replacement2048, replacement1024);
+                    } else {
+                        result = service.restore(mode == MODE_DELETE_IL2CPP);
+                    }
                     boolean ok = result != null && result.startsWith("OK\n");
                     String detail = result == null ? "Shizuku 服务没有返回结果"
                             : result.replaceFirst("^(OK|ERR)\\n", "").replace('\n', '：');
-                    finish(ok, detail);
+                    finish(ok, backupDetail + detail);
                 } catch (Throwable t) {
                     finish(false, "Shizuku 文件操作失败：" + message(t));
                 }

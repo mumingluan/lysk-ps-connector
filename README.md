@@ -12,7 +12,10 @@
 ## 功能
 
 - 通过 Shizuku 立即补丁 `global-metadata.dat` 中的私服 RSA 公钥，客户端独立完成文件操作。
-- 通过 Shizuku 覆盖官方公钥，或删除 `files/il2cpp` 目录让游戏下次启动自动重建。
+- RSA 首次修补前自动备份两段原公钥到应用私有目录；可严格从备份还原、覆盖官方公钥，或删除 `files/il2cpp` 重建。
+- 选择 Pape-ResSolver 输出的 NLS ZIP 后，自动校验并提取同名 NX，备份游戏原 ZIP/NX 后成对替换。
+- NLS 可从应用私有备份成对还原，或删除已安装的 ZIP/NX 让游戏重新获取官方资源。
+- 提供独立的“启动恋与深空”按钮。
 - 集成 `ShizukuProvider`；首次执行 RSA 文件操作前，请启动 Shizuku 并授权本客户端。
 - RSA 公钥块和当前客户端偏移默认保存在 `Config.java`，文件操作由 Shizuku UserService 完成。
 - 只接管指定应用的 `VpnService`；包名可填 `*`，表示除 LYSK-PS-Connector 自身外的全部应用。
@@ -36,7 +39,9 @@ VPN 数据面使用 [tun2proxy](https://github.com/tun2proxy/tun2proxy)，动态
 2. 启动 Shizuku；如需 RSA 文件操作，请在首次提示时授权 `LYSK-PS-Connector`。
 3. 打开 `LYSK-PS-Connector`：
    - 点击“补丁 RSA（Shizuku）”，授权后立即改写现有 metadata；
-   - 需要还原时，选择覆盖官方公钥或删除 `files/il2cpp` 并让游戏自动重建；
+   - 需要还原 RSA 时，优先选择修补前自动备份，也可覆盖官方公钥或删除 `files/il2cpp`；
+   - 安装 NLS 时只需选择 Solver 输出的数字 ZIP，NX 会从 ZIP 自动提取；
+   - 还原 NLS 时选择私有备份还原，或删除对应 ZIP/NX；
    - 配置过滤域名和 VPN 作用包名；
    - 选择 HTTP 代理或 Web 重定向；
    - 分别填写“上游代理地址”和“上游 HTTP 服务地址”；

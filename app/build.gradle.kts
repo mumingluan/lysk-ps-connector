@@ -10,8 +10,8 @@ android {
         applicationId = "com.axuan.lyskps"
         minSdk = 24
         targetSdk = 28          // 低 target: 客户端 UI 无额外存储权限要求
-        versionCode = 10
-        versionName = "1.9"
+        versionCode = 11
+        versionName = "2.0"
     }
 
     buildTypes {
@@ -54,6 +54,7 @@ android {
 
 dependencies {
     implementation("org.bouncycastle:bcpkix-jdk18on:1.85")
+    implementation("org.tukaani:xz:1.10")
     implementation("dev.rikka.shizuku:api:13.1.5")
     implementation("dev.rikka.shizuku:provider:13.1.5")
     testImplementation("junit:junit:4.13.2")

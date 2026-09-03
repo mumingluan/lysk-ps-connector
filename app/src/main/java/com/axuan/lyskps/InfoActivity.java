@@ -31,6 +31,7 @@ public class InfoActivity extends Activity {
     private static final int REQ_CA_CERT=2001,REQ_CA_KEY=2002,REQ_LEAF_CERT=2003,REQ_LEAF_KEY=2004;
     private static final int REQ_EXPORT_CRT=2101,REQ_EXPORT_HASH=2102;
     private static final int REQ_SHIZUKU_RSA=3001;
+    private static final int REQ_NLS_ZIP=3101;
     private static final int BG=0xff121318, SURFACE=0xff1e1f25, TEXT=0xffe6e1e5;
     private static final int MUTED=0xffcac4d0, PRIMARY=0xffd0bcff, ON_PRIMARY=0xff381e72, OUTLINE=0xff49454f;
     private SharedPreferences prefs;
@@ -40,12 +41,13 @@ public class InfoActivity extends Activity {
     private LinearLayout tlsIdentityPanel;
     private TextView state, logText, certStatus, protocolWarning;
     private Button httpProxyButton;
-    private int pendingShizukuRsaMode;
+    private int pendingShizukuMode;
+    private SolverNlsArchive.Prepared pendingNlsPatch;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Shizuku.OnRequestPermissionResultListener shizukuPermissionListener = (requestCode, grantResult) -> {
         if(requestCode!=REQ_SHIZUKU_RSA)return;
-        int mode=pendingShizukuRsaMode;pendingShizukuRsaMode=0;
-        if(grantResult==PackageManager.PERMISSION_GRANTED&&mode!=0)runShizukuRsaOperation(mode);
+        int mode=pendingShizukuMode;pendingShizukuMode=0;
+        if(grantResult==PackageManager.PERMISSION_GRANTED&&mode!=0)runShizukuOperation(mode);
         else Toast.makeText(this,"未授予 Shizuku 权限",Toast.LENGTH_LONG).show();
     };
     private final Runnable refresh = new Runnable() {
@@ -70,7 +72,7 @@ public class InfoActivity extends Activity {
         LinearLayout root=new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL); root.setPadding(dp(18),dp(18),dp(18),dp(28)); root.setBackgroundColor(BG);
         TextView title=label("LYSK-PS-Connector",28,TEXT); title.setTypeface(null,Typeface.BOLD); root.addView(title);
-        root.addView(label("Shizuku RSA + Selective VPN  ·  v1.9",13,PRIMARY));
+        root.addView(label("Shizuku RSA / NLS + Selective VPN  ·  v2.0",13,PRIMARY));
         root.addView(label("RSA 文件操作需要先启动 Shizuku，并授权本客户端。",13,MUTED));
 
         root.addView(section("过滤范围"));
@@ -99,13 +101,22 @@ public class InfoActivity extends Activity {
         state=label("",13,PRIMARY);root.addView(state);
         root.addView(section("RSA 文件操作"));
         Button patchPrivate=button("补丁 RSA（Shizuku）",true);
-        patchPrivate.setOnClickListener(v->requestShizukuRsaOperation(OfficialRsaRestorer.MODE_APPLY_PRIVATE));
+        patchPrivate.setOnClickListener(v->requestShizukuOperation(OfficialRsaRestorer.MODE_APPLY_PRIVATE));
         root.addView(patchPrivate);
         Button restoreOfficial=button("恢复官方 RSA（Shizuku）",false);
         restoreOfficial.setOnClickListener(v->restoreOfficialRsa());
         root.addView(restoreOfficial);
-        root.addView(label("补丁 RSA 会在获得 Shizuku 权限后立即改写现有 global-metadata.dat，不启动游戏、不等待；恢复功能仍会先停止游戏。",12,MUTED));
-        root.addView(label("私服公钥会持久写入外部 metadata。需要还原时，可通过 Shizuku 覆盖官方公钥，或删除 il2cpp 目录让游戏下次启动自动重建。",12,MUTED));
+        root.addView(label("首次补丁前会把两段原 RSA 公钥保存到 connector 私有目录。恢复时可严格从该备份还原；备份缺失或损坏会直接报错。",12,MUTED));
+
+        root.addView(section("NLS 语音资源"));
+        Button installNls=button("选择 Solver ZIP 并安装 NLS",true);
+        installNls.setOnClickListener(v->selectNlsZip());root.addView(installNls);
+        Button restoreNls=button("还原 NLS",false);
+        restoreNls.setOnClickListener(v->restoreNls());root.addView(restoreNls);
+        root.addView(label("只需选择 Solver 输出的数字 ZIP；程序会校验 method-14、自动解出同名 NX，并在替换前将游戏原 ZIP/NX 成对备份到 connector 私有目录。",12,MUTED));
+
+        Button launchGame=button("启动恋与深空",false);
+        launchGame.setOnClickListener(v->launchGame());root.addView(launchGame);
 
         LinearLayout actions=new LinearLayout(this);actions.setOrientation(LinearLayout.HORIZONTAL);
         Button start=button("保存并启动",true),stop=button("停止 VPN",false);
@@ -127,36 +138,39 @@ public class InfoActivity extends Activity {
     private void modeUi(){boolean redirect=modes.getCheckedRadioButtonId()==VpnConfig.MODE_REDIRECT;tlsWrapper.setVisibility(redirect?View.VISIBLE:View.GONE);if(tlsIdentityPanel!=null)tlsIdentityPanel.setVisibility(redirect&&tlsWrapper.isChecked()?View.VISIBLE:View.GONE);String address=redirectEndpoint.getText().toString().trim().toLowerCase(Locale.ROOT);if(redirect&&!address.startsWith("https://")){protocolWarning.setVisibility(View.VISIBLE);if(tlsWrapper.isChecked()){protocolWarning.setText("提示：当前服务地址不是 https://。命中的 HTTPS 将由内置包装器终止 TLS 后转为 HTTP。此配置可用。");protocolWarning.setTextColor(0xffffd8a8);}else{protocolWarning.setText("警告：服务地址不是 https:// 且内置包装器已关闭。原始 TLS 会进入明文 HTTP 服务，通常会连接失败。");protocolWarning.setTextColor(0xffffb4ab);}}else protocolWarning.setVisibility(View.GONE);}
     private boolean save(){try{VpnConfig.fromInput(modes.getCheckedRadioButtonId(),proxyEndpoint.getText().toString(),redirectEndpoint.getText().toString(),tlsWrapper.isChecked(),domains.getText().toString(),packages.getText().toString()).save(prefs);return true;}catch(Throwable e){Toast.makeText(this,e.getMessage()==null?"配置无效":e.getMessage(),Toast.LENGTH_LONG).show();return false;}}
     private void requestStart(){if(!save())return;Intent i=VpnService.prepare(this);if(i!=null)startActivityForResult(i,REQ_VPN);else startVpn();}
-    @Override protected void onActivityResult(int requestCode,int resultCode,Intent data){super.onActivityResult(requestCode,resultCode,data);if(requestCode==REQ_VPN){if(resultCode==RESULT_OK)startVpn();else Toast.makeText(this,"未授予 VPN 权限",Toast.LENGTH_LONG).show();return;}if(resultCode!=RESULT_OK||data==null||data.getData()==null)return;if(requestCode==REQ_EXPORT_CRT||requestCode==REQ_EXPORT_HASH){new Thread(()->{try(OutputStream out=getContentResolver().openOutputStream(data.getData(),"w")){TlsIdentityStore store=TlsIdentityStore.get(this);out.write(requestCode==REQ_EXPORT_HASH?store.caPemBytes():store.caBytes());out.flush();runOnUiThread(()->Toast.makeText(this,"CA 证书已导出",Toast.LENGTH_LONG).show());}catch(Throwable e){runOnUiThread(()->Toast.makeText(this,"导出失败："+e.getMessage(),Toast.LENGTH_LONG).show());}},"lyskps-export").start();return;}int kind=requestCode==REQ_CA_CERT?TlsIdentityStore.CA_CERT:requestCode==REQ_CA_KEY?TlsIdentityStore.CA_KEY:requestCode==REQ_LEAF_CERT?TlsIdentityStore.LEAF_CERT:TlsIdentityStore.LEAF_KEY;new Thread(()->{try(InputStream in=getContentResolver().openInputStream(data.getData())){String result=TlsIdentityStore.get(this).importPart(kind,in);runOnUiThread(()->{LyskVpnService.stop(this);Toast.makeText(this,result+"；VPN 已停止，请重新启动",Toast.LENGTH_LONG).show();refreshIdentity();});}catch(Throwable e){runOnUiThread(()->Toast.makeText(this,"导入失败："+e.getMessage(),Toast.LENGTH_LONG).show());}},"lyskps-import").start();}
+    @Override protected void onActivityResult(int requestCode,int resultCode,Intent data){super.onActivityResult(requestCode,resultCode,data);if(requestCode==REQ_VPN){if(resultCode==RESULT_OK)startVpn();else Toast.makeText(this,"未授予 VPN 权限",Toast.LENGTH_LONG).show();return;}if(resultCode!=RESULT_OK||data==null||data.getData()==null)return;if(requestCode==REQ_NLS_ZIP){Toast.makeText(this,"正在校验并提取 Solver NLS 资源…",Toast.LENGTH_SHORT).show();new Thread(()->{try{SolverNlsArchive.Prepared prepared=SolverNlsArchive.prepare(this,data.getData());runOnUiThread(()->{pendingNlsPatch=prepared;requestShizukuOperation(NlsResourceManager.MODE_INSTALL);});}catch(Throwable e){runOnUiThread(()->Toast.makeText(this,"NLS ZIP 无效："+safeMessage(e),Toast.LENGTH_LONG).show());}},"lyskps-nls-prepare").start();return;}if(requestCode==REQ_EXPORT_CRT||requestCode==REQ_EXPORT_HASH){new Thread(()->{try(OutputStream out=getContentResolver().openOutputStream(data.getData(),"w")){TlsIdentityStore store=TlsIdentityStore.get(this);out.write(requestCode==REQ_EXPORT_HASH?store.caPemBytes():store.caBytes());out.flush();runOnUiThread(()->Toast.makeText(this,"CA 证书已导出",Toast.LENGTH_LONG).show());}catch(Throwable e){runOnUiThread(()->Toast.makeText(this,"导出失败："+e.getMessage(),Toast.LENGTH_LONG).show());}},"lyskps-export").start();return;}int kind=requestCode==REQ_CA_CERT?TlsIdentityStore.CA_CERT:requestCode==REQ_CA_KEY?TlsIdentityStore.CA_KEY:requestCode==REQ_LEAF_CERT?TlsIdentityStore.LEAF_CERT:TlsIdentityStore.LEAF_KEY;new Thread(()->{try(InputStream in=getContentResolver().openInputStream(data.getData())){String result=TlsIdentityStore.get(this).importPart(kind,in);runOnUiThread(()->{LyskVpnService.stop(this);Toast.makeText(this,result+"；VPN 已停止，请重新启动",Toast.LENGTH_LONG).show();refreshIdentity();});}catch(Throwable e){runOnUiThread(()->Toast.makeText(this,"导入失败："+e.getMessage(),Toast.LENGTH_LONG).show());}},"lyskps-import").start();}
     private void updateShizukuState(){updateState();}
     private void restoreOfficialRsa(){
-        String[] actions={"覆盖两处官方公钥块（保留 metadata）","删除 il2cpp 目录（下次启动自动重建）"};
+        String[] actions={"从修补前自动备份还原","覆盖两处官方公钥块（保留 metadata）","删除 il2cpp 目录（下次启动自动重建）"};
         new android.app.AlertDialog.Builder(this)
                 .setTitle("使用 Shizuku 恢复官方 RSA")
                 .setItems(actions,(d,which)->{
-                    int mode=which==0?OfficialRsaRestorer.MODE_RESTORE_BLOCKS:OfficialRsaRestorer.MODE_DELETE_IL2CPP;
+                    int mode=which==0?OfficialRsaRestorer.MODE_RESTORE_BACKUP:which==1?OfficialRsaRestorer.MODE_RESTORE_BLOCKS:OfficialRsaRestorer.MODE_DELETE_IL2CPP;
                     if(mode==OfficialRsaRestorer.MODE_DELETE_IL2CPP){
                         new android.app.AlertDialog.Builder(this)
                                 .setTitle("删除 il2cpp 目录？")
                                 .setMessage("将停止恋与深空并删除外部 files/il2cpp 整个目录。游戏下次启动时会自动重建，首次启动可能稍慢。")
-                                .setPositiveButton("删除 il2cpp",(x,y)->requestShizukuRsaOperation(mode))
+                                .setPositiveButton("删除 il2cpp",(x,y)->requestShizukuOperation(mode))
                                 .setNegativeButton("取消",null).show();
-                    }else requestShizukuRsaOperation(mode);
+                    }else requestShizukuOperation(mode);
                 })
                 .setNegativeButton("取消",null)
                 .show();
     }
-    private void requestShizukuRsaOperation(int mode){
+    private void requestShizukuOperation(int mode){
         try{
             if(!Shizuku.pingBinder()){Toast.makeText(this,"正在连接 Shizuku，请稍候再试",Toast.LENGTH_LONG).show();try{ShizukuProvider.requestBinderForNonProviderProcess(this);}catch(Throwable ignored){}return;}
             if(Shizuku.isPreV11()){Toast.makeText(this,"Shizuku 版本过旧，请升级",Toast.LENGTH_LONG).show();return;}
-            if(Shizuku.checkSelfPermission()==PackageManager.PERMISSION_GRANTED){runShizukuRsaOperation(mode);return;}
+            if(Shizuku.checkSelfPermission()==PackageManager.PERMISSION_GRANTED){runShizukuOperation(mode);return;}
             if(Shizuku.shouldShowRequestPermissionRationale()){Toast.makeText(this,"Shizuku 权限已被拒绝，请在 Shizuku 管理器中重新授权",Toast.LENGTH_LONG).show();return;}
-            pendingShizukuRsaMode=mode;
+            pendingShizukuMode=mode;
             Shizuku.requestPermission(REQ_SHIZUKU_RSA);
         }catch(Throwable e){Toast.makeText(this,"无法连接 Shizuku："+e.getMessage(),Toast.LENGTH_LONG).show();}
     }
-    private void runShizukuRsaOperation(int mode){
+    private void runShizukuOperation(int mode){
+        if(mode==NlsResourceManager.MODE_INSTALL){if(pendingNlsPatch==null){Toast.makeText(this,"请先选择 Solver NLS ZIP",Toast.LENGTH_LONG).show();return;}SolverNlsArchive.Prepared prepared=pendingNlsPatch;Toast.makeText(this,"正在备份并安装 NLS ZIP/NX…",Toast.LENGTH_SHORT).show();NlsResourceManager.install(this,prepared,(ok,detail)->runOnUiThread(()->{if(ok)pendingNlsPatch=null;Toast.makeText(this,(ok?"完成：":"失败：")+detail,Toast.LENGTH_LONG).show();}));return;}
+        if(mode==NlsResourceManager.MODE_RESTORE_BACKUP){Toast.makeText(this,"正在从私有备份还原 NLS…",Toast.LENGTH_SHORT).show();NlsResourceManager.restoreBackup(this,(ok,detail)->runOnUiThread(()->Toast.makeText(this,(ok?"完成：":"失败：")+detail,Toast.LENGTH_LONG).show()));return;}
+        if(mode==NlsResourceManager.MODE_DELETE){Toast.makeText(this,"正在删除 NLS ZIP/NX…",Toast.LENGTH_SHORT).show();NlsResourceManager.deleteInstalled(this,(ok,detail)->runOnUiThread(()->Toast.makeText(this,(ok?"完成：":"失败：")+detail,Toast.LENGTH_LONG).show()));return;}
         if(mode==OfficialRsaRestorer.MODE_APPLY_PRIVATE){
             try{
                 Config.load(getSharedPreferences(Config.PREFS,0));
@@ -168,11 +182,16 @@ public class InfoActivity extends Activity {
             }catch(Throwable e){Toast.makeText(this,"RSA 配置无效："+e.getMessage(),Toast.LENGTH_LONG).show();}
             return;
         }
+        if(mode==OfficialRsaRestorer.MODE_RESTORE_BACKUP){LyskVpnService.stop(this);Toast.makeText(this,"正在从自动备份还原 RSA…",Toast.LENGTH_SHORT).show();OfficialRsaRestorer.restoreBackup(this,(ok,detail)->runOnUiThread(()->Toast.makeText(this,(ok?"完成：":"失败：")+detail,Toast.LENGTH_LONG).show()));return;}
         LyskVpnService.stop(this);
         String action=mode==OfficialRsaRestorer.MODE_DELETE_IL2CPP?"删除 il2cpp 目录":"恢复官方公钥";
         Toast.makeText(this,"正在通过 Shizuku "+action+"…",Toast.LENGTH_SHORT).show();
         OfficialRsaRestorer.restore(this,mode,(ok,detail)->runOnUiThread(()->Toast.makeText(this,(ok?"完成：":"失败：")+detail,Toast.LENGTH_LONG).show()));
     }
+    private void selectNlsZip(){Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT);i.addCategory(Intent.CATEGORY_OPENABLE);i.setType("application/zip");startActivityForResult(i,REQ_NLS_ZIP);}
+    private void restoreNls(){String[] actions={"从 connector 私有备份还原 ZIP + NX","删除游戏中的 ZIP + NX"};new android.app.AlertDialog.Builder(this).setTitle("还原 NLS").setItems(actions,(d,which)->{int mode=which==0?NlsResourceManager.MODE_RESTORE_BACKUP:NlsResourceManager.MODE_DELETE;if(mode==NlsResourceManager.MODE_DELETE){new android.app.AlertDialog.Builder(this).setTitle("删除 NLS ZIP + NX？").setMessage("将停止游戏并删除上次安装记录对应的两个资源文件。游戏后续可能重新下载或展开官方资源。").setPositiveButton("删除",(x,y)->requestShizukuOperation(mode)).setNegativeButton("取消",null).show();}else requestShizukuOperation(mode);}).setNegativeButton("取消",null).show();}
+    private void launchGame(){try{Intent launch=getPackageManager().getLaunchIntentForPackage("com.papegames.lysk.cn");if(launch==null){Toast.makeText(this,"未安装恋与深空或找不到启动入口",Toast.LENGTH_LONG).show();return;}launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK|Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);startActivity(launch);}catch(Throwable e){Toast.makeText(this,"启动游戏失败："+safeMessage(e),Toast.LENGTH_LONG).show();}}
+    private static String safeMessage(Throwable e){String value=e.getMessage();return value==null?e.getClass().getSimpleName():value;}
     private void startVpn(){VpnLog.i("UI","保存配置并启动 VPN");LyskVpnService.start(this);}
     private void updateState(){if(state!=null)state.setText("状态  ·  Shizuku "+(Shizuku.pingBinder()?"已连接":"未连接")+"  ·  VPN "+(LyskVpnService.isRunning(this)?"运行中":"已停止")+"  ·  HTTP代理 "+(HttpProxyService.isRunning()?"运行中":"已停止"));if(httpProxyButton!=null)httpProxyButton.setText(HttpProxyService.isRunning()?"停止 HTTP 代理":"仅启动 HTTP 代理");}
     private boolean isLogAtBottom(){if(logText==null||logText.getLayout()==null)return true;int content=logText.getLayout().getHeight()+logText.getPaddingTop()+logText.getPaddingBottom();return logText.getScrollY()+logText.getHeight()>=content-dp(12);}
