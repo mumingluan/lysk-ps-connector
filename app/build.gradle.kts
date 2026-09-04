@@ -12,8 +12,8 @@ android {
         applicationId = "com.axuan.lyskps"
         minSdk = 24
         targetSdk = 28          // 低 target: 客户端 UI 无额外存储权限要求
-        versionCode = 13
-        versionName = "3.1"
+        versionCode = 14
+        versionName = "3.2"
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")
         }
@@ -45,6 +45,7 @@ android {
 
     buildFeatures {
         aidl = true
+        buildConfig = true
         compose = true
     }
 

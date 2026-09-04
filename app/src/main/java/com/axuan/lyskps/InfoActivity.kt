@@ -74,6 +74,7 @@ class InfoActivity : ComponentActivity() {
     private val isVpnRunningState = mutableStateOf(false)
     private val isProxyRunningState = mutableStateOf(false)
     private val isShizukuConnectedState = mutableStateOf(false)
+    private val shizukuUidState = mutableStateOf<Int?>(null)
     private val certStatusState = mutableStateOf("正在读取 TLS 凭据…")
     private val logSnapshotState = mutableStateOf("")
 
@@ -258,6 +259,7 @@ class InfoActivity : ComponentActivity() {
                     isVpnRunning = isVpnRunningState.value,
                     isProxyRunning = isProxyRunningState.value,
                     isShizukuConnected = isShizukuConnectedState.value,
+                    shizukuUid = shizukuUidState.value,
                     certStatus = certStatusState.value,
                     logSnapshot = logSnapshotState.value,
                     initialConfig = VpnConfig.load(vpnPrefs),
@@ -301,7 +303,13 @@ class InfoActivity : ComponentActivity() {
     private fun updateLiveStates() {
         isVpnRunningState.value = LyskVpnService.isRunning(this)
         isProxyRunningState.value = HttpProxyService.isRunning()
-        isShizukuConnectedState.value = Shizuku.pingBinder()
+        val shizukuConnected = Shizuku.pingBinder()
+        isShizukuConnectedState.value = shizukuConnected
+        shizukuUidState.value = if (shizukuConnected) {
+            try { Shizuku.getUid() } catch (ignored: Throwable) { null }
+        } else {
+            null
+        }
         val snap = VpnLog.snapshot()
         if (logSnapshotState.value != snap) {
             logSnapshotState.value = snap
@@ -392,6 +400,12 @@ class InfoActivity : ComponentActivity() {
                 showToast("Shizuku 版本过旧，请升级至 v11+")
                 return
             }
+            if (requiresRootShizuku(mode) && Shizuku.getUid() != 0) {
+                val detail = "$action 仅当 Shizuku 以 Root 模式运行时可用"
+                VpnLog.i("ERROR", detail)
+                showToast(detail)
+                return
+            }
             if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
                 VpnLog.i("ACTION", "权限已就绪，开始执行：$action")
                 runShizukuOperation(mode)
@@ -424,7 +438,20 @@ class InfoActivity : ComponentActivity() {
         else -> "未知操作 $mode"
     }
 
+    private fun requiresRootShizuku(mode: Int): Boolean =
+        mode == OfficialRsaRestorer.MODE_DELETE_IL2CPP
+
     private fun runShizukuOperation(mode: Int) {
+        if (requiresRootShizuku(mode)) {
+            val hasRoot = try { Shizuku.pingBinder() && Shizuku.getUid() == 0 }
+            catch (ignored: Throwable) { false }
+            if (!hasRoot) {
+                val detail = "${shizukuActionName(mode)} 仅当 Shizuku 以 Root 模式运行时可用"
+                VpnLog.i("ERROR", detail)
+                showToast(detail)
+                return
+            }
+        }
         when (mode) {
             NlsResourceManager.MODE_INSTALL -> {
                 val prepared = pendingNlsPrepared
@@ -584,6 +611,7 @@ fun MainScreen(
     isVpnRunning: Boolean,
     isProxyRunning: Boolean,
     isShizukuConnected: Boolean,
+    shizukuUid: Int?,
     certStatus: String,
     logSnapshot: String,
     initialConfig: VpnConfig,
@@ -664,7 +692,7 @@ fun MainScreen(
                 title = if (selectedTab == MainTab.HOME) "LYSK PS Connector" else selectedTab.label,
                 actions = {
                     Text(
-                        text = "3.1",
+                        text = BuildConfig.VERSION_NAME,
                         color = MiuixTheme.colorScheme.primary,
                         fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.padding(horizontal = 16.dp)
@@ -709,6 +737,7 @@ fun MainScreen(
                     HomeStatusCard(
                         isVpnRunning = isVpnRunning,
                         isShizukuConnected = isShizukuConnected,
+                        shizukuUid = shizukuUid,
                         modeName = if (isRedirect) "Web 重定向" else "HTTP 代理",
                         tlsWrapperActive = redirectTlsWrapper && isRedirect,
                         onToggle = { onToggleVpn(currentConfig()) }
@@ -1044,6 +1073,7 @@ fun MainScreen(
 
     AppDialogHost(
         activeDialog = activeDialog,
+        isShizukuRoot = isShizukuConnected && shizukuUid == 0,
         onDismiss = { activeDialog = null },
         onDialogChange = { activeDialog = it },
         onRestoreRsa = onRestoreRsa,
@@ -1067,6 +1097,7 @@ private enum class AppDialog {
 @Composable
 private fun AppDialogHost(
     activeDialog: AppDialog?,
+    isShizukuRoot: Boolean,
     onDismiss: () -> Unit,
     onDialogChange: (AppDialog) -> Unit,
     onRestoreRsa: (Int) -> Unit,
@@ -1087,7 +1118,11 @@ private fun AppDialogHost(
     }
     val summary = when (activeDialog) {
         AppDialog.RSA_OPTIONS -> "通过 Shizuku 选择恢复方式"
-        AppDialog.RSA_DELETE_CONFIRM -> "将停止恋与深空并删除 files/il2cpp 目录，游戏下次启动时会自动重建。"
+        AppDialog.RSA_DELETE_CONFIRM -> if (isShizukuRoot) {
+            "将停止恋与深空并删除 files/il2cpp 目录，游戏下次启动时会自动重建。"
+        } else {
+            "仅当 Shizuku 以 Root 模式运行时可用。"
+        }
         AppDialog.RSA_KEY_OPTIONS -> "分别选择 2048 位和 1024 位 RSA 公钥 PEM"
         AppDialog.RSA_KEY_RESET_CONFIRM -> "将清除已导入的两把公钥，恢复应用内置的 2048/1024 位 PEM。"
         AppDialog.NLS_OPTIONS -> "选择从备份恢复，或移除已安装的资源文件"
@@ -1127,7 +1162,12 @@ private fun AppDialogHost(
                     BasicComponent(
                         title = "重建 il2cpp",
                         titleColor = BasicComponentDefaults.titleColor(MiuixTheme.colorScheme.error),
-                        summary = "删除目录，游戏下次启动时自动重建",
+                        summary = if (isShizukuRoot) {
+                            "删除目录，游戏下次启动时自动重建"
+                        } else {
+                            "仅当 Shizuku 以 Root 模式运行时可用"
+                        },
+                        enabled = isShizukuRoot,
                         onClick = { onDialogChange(AppDialog.RSA_DELETE_CONFIRM) }
                     )
                 }
@@ -1143,6 +1183,7 @@ private fun AppDialogHost(
                 DialogActionButtons(
                     confirmText = "删除并重建",
                     destructive = true,
+                    confirmEnabled = isShizukuRoot,
                     onDismiss = onDismiss,
                     onConfirm = {
                         onDismiss()
@@ -1260,6 +1301,7 @@ private fun AppDialogHost(
 private fun DialogActionButtons(
     confirmText: String,
     destructive: Boolean,
+    confirmEnabled: Boolean = true,
     onDismiss: () -> Unit,
     onConfirm: () -> Unit
 ) {
@@ -1275,6 +1317,7 @@ private fun DialogActionButtons(
         )
         Button(
             onClick = onConfirm,
+            enabled = confirmEnabled,
             modifier = Modifier.weight(1f),
             colors = ButtonDefaults.buttonColorsPrimary(
                 color = if (destructive) colors.error else colors.primary,
@@ -1350,6 +1393,7 @@ private fun LiquidGlassBottomBar(
 private fun HomeStatusCard(
     isVpnRunning: Boolean,
     isShizukuConnected: Boolean,
+    shizukuUid: Int?,
     modeName: String,
     tlsWrapperActive: Boolean,
     onToggle: () -> Unit
@@ -1420,6 +1464,7 @@ private fun HomeStatusCard(
 
             ShizukuStatusBadge(
                 isShizukuConnected = isShizukuConnected,
+                shizukuUid = shizukuUid,
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .padding(16.dp, 14.dp)
@@ -1431,6 +1476,7 @@ private fun HomeStatusCard(
 @Composable
 private fun ShizukuStatusBadge(
     isShizukuConnected: Boolean,
+    shizukuUid: Int? = null,
     modifier: Modifier = Modifier
 ) {
     val colors = MiuixTheme.colorScheme
@@ -1449,7 +1495,12 @@ private fun ShizukuStatusBadge(
                 .background(if (isShizukuConnected) colors.primary else colors.error)
         )
         Text(
-            text = if (isShizukuConnected) "Shizuku 已就绪" else "Shizuku 未就绪",
+            text = when {
+                !isShizukuConnected -> "Shizuku 未就绪"
+                shizukuUid == 0 -> "Shizuku · Root"
+                shizukuUid == 2000 -> "Shizuku · Shell"
+                else -> "Shizuku 已就绪"
+            },
             fontSize = 11.sp,
             fontWeight = FontWeight.Medium,
             color = if (isShizukuConnected) colors.onPrimaryContainer else colors.onErrorContainer,

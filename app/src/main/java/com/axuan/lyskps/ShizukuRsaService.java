@@ -163,6 +163,7 @@ public final class ShizukuRsaService extends IShizukuRsaService.Stub {
             }
 
             if (deleteIl2cpp) {
+                if (Os.getuid() != 0) return fail("删除 il2cpp 需要 Root 模式 Shizuku");
                 File il2cpp = new File(IL2CPP);
                 if (!il2cpp.exists()) return ok("il2cpp 目录已不存在，下次启动会自动重建");
                 CommandResult removed = runCommand("rm", "-rf", IL2CPP);

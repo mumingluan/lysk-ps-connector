@@ -81,6 +81,10 @@ public final class OfficialRsaRestorer {
                 complete(callback, false, "尚未授予 Shizuku 权限");
                 return;
             }
+            if (mode == MODE_DELETE_IL2CPP && Shizuku.getUid() != 0) {
+                complete(callback, false, "删除并重建 il2cpp 仅当 Shizuku 以 Root 模式运行时可用");
+                return;
+            }
 
             Shizuku.UserServiceArgs args = new Shizuku.UserServiceArgs(
                     new ComponentName(app.getPackageName(), ShizukuRsaService.class.getName()))
