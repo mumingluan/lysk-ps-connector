@@ -8,7 +8,10 @@ import android.os.IBinder;
 import android.os.Handler;
 import android.os.Looper;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.InputStream;
+import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Set;
@@ -23,6 +26,7 @@ public final class OfficialRsaRestorer {
     public static final int MODE_DELETE_IL2CPP = 2;
     public static final int MODE_APPLY_PRIVATE = 3;
     public static final int MODE_RESTORE_BACKUP = 4;
+    public static final int MODE_RESTORE_FROM_APK = 5;
     private static final Set<Operation> ACTIVE_OPERATIONS = Collections.newSetFromMap(
             new ConcurrentHashMap<Operation, Boolean>());
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
@@ -52,6 +56,60 @@ public final class OfficialRsaRestorer {
         }
     }
 
+    public static void checkPatched(Context context, long off2048, long off1024,
+                                    byte[] replacement2048, byte[] replacement1024,
+                                    Callback callback) {
+        new Thread(() -> {
+            try {
+                if (!Shizuku.pingBinder()
+                        || Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
+                    callback(callback, false, "not ready");
+                    return;
+                }
+                byte[] current2048 = readRemoteBlock(off2048, replacement2048.length);
+                byte[] current1024 = readRemoteBlock(off1024, replacement1024.length);
+                boolean matches = Arrays.equals(current2048, replacement2048)
+                        && Arrays.equals(current1024, replacement1024);
+                callback(callback, matches, matches ? "matched" : "different");
+            } catch (Throwable ignored) {
+                callback(callback, false, "unavailable");
+            }
+        }, "lyskps-rsa-status").start();
+    }
+
+    private static byte[] readRemoteBlock(long offset, int length) throws Exception {
+        if (offset < 0 || length <= 0) throw new IllegalArgumentException("RSA 读取范围无效");
+        Method method = Shizuku.class.getDeclaredMethod("newProcess",
+                String[].class, String[].class, String.class);
+        method.setAccessible(true);
+        Process process = (Process) method.invoke(null,
+                new Object[]{new String[]{"dd",
+                        "if=/storage/emulated/0/Android/data/com.papegames.lysk.cn/files/il2cpp/Metadata/global-metadata.dat",
+                        "bs=1", "skip=" + offset, "count=" + length, "status=none"}, null, null});
+        byte[] output;
+        try (InputStream input = process.getInputStream()) {
+            output = readAll(input);
+        }
+        byte[] error;
+        try (InputStream input = process.getErrorStream()) {
+            error = readAll(input);
+        }
+        int code = process.waitFor();
+        if (code != 0 || output.length != length) {
+            throw new IllegalStateException("读取 metadata 失败，exit=" + code
+                    + (error.length == 0 ? "" : "：" + new String(error)));
+        }
+        return output;
+    }
+
+    private static byte[] readAll(InputStream input) throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        byte[] buffer = new byte[1024];
+        int count;
+        while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
+        return output.toByteArray();
+    }
+
     private static void execute(Context context, int mode, long off2048, long off1024,
                                 byte[] replacement2048, byte[] replacement1024,
                                 Callback callback) {
@@ -59,7 +117,8 @@ public final class OfficialRsaRestorer {
         VpnLog.init(app);
         VpnLog.i("RSA", "提交 Shizuku 操作：" + actionName(mode));
         if (mode != MODE_RESTORE_BLOCKS && mode != MODE_DELETE_IL2CPP
-                && mode != MODE_APPLY_PRIVATE && mode != MODE_RESTORE_BACKUP) {
+                && mode != MODE_APPLY_PRIVATE && mode != MODE_RESTORE_BACKUP
+                && mode != MODE_RESTORE_FROM_APK) {
             complete(callback, false, "未知 RSA 操作");
             return;
         }
@@ -91,7 +150,7 @@ public final class OfficialRsaRestorer {
                     .daemon(false)
                     .processNameSuffix("rsa_file")
                     .debuggable(false)
-                    .version(5);
+                    .version(6);
             Operation operation = new Operation(app, args, mode, off2048, off1024,
                     replacement2048, replacement1024, callback);
             ACTIVE_OPERATIONS.add(operation);
@@ -166,6 +225,8 @@ public final class OfficialRsaRestorer {
                     String result;
                     if (mode == MODE_APPLY_PRIVATE || mode == MODE_RESTORE_BACKUP) {
                         result = service.patch(off2048, off1024, replacement2048, replacement1024);
+                    } else if (mode == MODE_RESTORE_FROM_APK) {
+                        result = service.restoreMetadataFromApk();
                     } else {
                         result = service.restore(mode == MODE_DELETE_IL2CPP);
                     }
@@ -210,6 +271,7 @@ public final class OfficialRsaRestorer {
             case MODE_RESTORE_BACKUP: return "从自动备份还原 RSA";
             case MODE_RESTORE_BLOCKS: return "恢复官方 RSA 公钥";
             case MODE_DELETE_IL2CPP: return "删除并重建 il2cpp";
+            case MODE_RESTORE_FROM_APK: return "从游戏 APK 重写 metadata";
             default: return "未知操作 " + mode;
         }
     }

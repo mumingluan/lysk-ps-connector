@@ -90,7 +90,7 @@ final class NlsResourceManager {
                     .daemon(false)
                     .processNameSuffix("game_files")
                     .debuggable(false)
-                    .version(5);
+                    .version(6);
             Operation operation = new Operation(app, args, mode, prepared, zipName, nxName, callback);
             ACTIVE_OPERATIONS.add(operation);
             try {

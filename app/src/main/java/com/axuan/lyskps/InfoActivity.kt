@@ -75,11 +75,16 @@ class InfoActivity : ComponentActivity() {
     private val isProxyRunningState = mutableStateOf(false)
     private val isShizukuConnectedState = mutableStateOf(false)
     private val shizukuUidState = mutableStateOf<Int?>(null)
+    private val isRsaPatchedState = mutableStateOf(false)
+    private val isRsaStatusCheckingState = mutableStateOf(false)
     private val certStatusState = mutableStateOf("正在读取 TLS 凭据…")
     private val logSnapshotState = mutableStateOf("")
 
     private var pendingShizukuMode: Int = 0
     private var pendingNlsPrepared: SolverNlsArchive.Prepared? = null
+    private var rsaStatusCheckInFlight = false
+    private var rsaStatusRefreshPending = false
+    private var wasShizukuConnected = false
 
     // Activity Result Launchers
     private val vpnLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
@@ -131,7 +136,10 @@ class InfoActivity : ComponentActivity() {
                             expectedBits
                         )
                     } ?: throw IllegalArgumentException("无法读取所选 PEM 文件")
-                    runOnUiThread { showToast("$result，下次立即补丁时生效") }
+                    runOnUiThread {
+                        showToast("$result，下次立即补丁时生效")
+                        refreshRsaPatchStatus()
+                    }
                 } catch (t: Throwable) {
                     runOnUiThread {
                         showToast("导入 PEM 失败：" + (t.message ?: t.javaClass.simpleName))
@@ -260,6 +268,8 @@ class InfoActivity : ComponentActivity() {
                     isProxyRunning = isProxyRunningState.value,
                     isShizukuConnected = isShizukuConnectedState.value,
                     shizukuUid = shizukuUidState.value,
+                    isRsaPatched = isRsaPatchedState.value,
+                    isRsaStatusChecking = isRsaStatusCheckingState.value,
                     certStatus = certStatusState.value,
                     logSnapshot = logSnapshotState.value,
                     initialConfig = VpnConfig.load(vpnPrefs),
@@ -304,15 +314,69 @@ class InfoActivity : ComponentActivity() {
         isVpnRunningState.value = LyskVpnService.isRunning(this)
         isProxyRunningState.value = HttpProxyService.isRunning()
         val shizukuConnected = Shizuku.pingBinder()
+        val justConnected = shizukuConnected && !wasShizukuConnected
+        wasShizukuConnected = shizukuConnected
         isShizukuConnectedState.value = shizukuConnected
         shizukuUidState.value = if (shizukuConnected) {
             try { Shizuku.getUid() } catch (ignored: Throwable) { null }
         } else {
             null
         }
+        if (!shizukuConnected) {
+            isRsaPatchedState.value = false
+        } else {
+            val hasPermission = try {
+                Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
+            } catch (ignored: Throwable) { false }
+            if (hasPermission && justConnected) {
+                refreshRsaPatchStatus()
+            }
+        }
         val snap = VpnLog.snapshot()
         if (logSnapshotState.value != snap) {
             logSnapshotState.value = snap
+        }
+    }
+
+    private fun refreshRsaPatchStatus() {
+        if (rsaStatusCheckInFlight) {
+            rsaStatusRefreshPending = true
+            return
+        }
+        val ready = try {
+            Shizuku.pingBinder()
+                    && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
+        } catch (ignored: Throwable) { false }
+        if (!ready) {
+            isRsaPatchedState.value = false
+            return
+        }
+        try {
+            Config.load(getSharedPreferences(Config.PREFS, Context.MODE_PRIVATE))
+            val off2048 = Config.parseHex(Config.off2048)
+            val off1024 = Config.parseHex(Config.off1024)
+            rsaStatusCheckInFlight = true
+            isRsaStatusCheckingState.value = true
+            OfficialRsaRestorer.checkPatched(
+                this, off2048, off1024,
+                Config.replace2048Bytes(), Config.replace1024Bytes()
+            ) { patched, _ ->
+                runOnUiThread {
+                    rsaStatusCheckInFlight = false
+                    isRsaStatusCheckingState.value = false
+                    isRsaPatchedState.value = try {
+                        Shizuku.pingBinder() && patched
+                    } catch (ignored: Throwable) { false }
+                    if (rsaStatusRefreshPending) {
+                        rsaStatusRefreshPending = false
+                        refreshRsaPatchStatus()
+                    }
+                }
+            }
+        } catch (ignored: Throwable) {
+            rsaStatusCheckInFlight = false
+            isRsaStatusCheckingState.value = false
+            isRsaPatchedState.value = false
         }
     }
 
@@ -432,6 +496,7 @@ class InfoActivity : ComponentActivity() {
         OfficialRsaRestorer.MODE_RESTORE_BACKUP -> "从自动备份还原 RSA"
         OfficialRsaRestorer.MODE_RESTORE_BLOCKS -> "恢复官方 RSA 公钥"
         OfficialRsaRestorer.MODE_DELETE_IL2CPP -> "删除并重建 il2cpp"
+        OfficialRsaRestorer.MODE_RESTORE_FROM_APK -> "从游戏 APK 重写 metadata"
         NlsResourceManager.MODE_INSTALL -> "安装 NLS ZIP/NX"
         NlsResourceManager.MODE_RESTORE_BACKUP -> "从私有备份还原 NLS"
         NlsResourceManager.MODE_DELETE -> "删除已安装 NLS"
@@ -490,7 +555,10 @@ class InfoActivity : ComponentActivity() {
                         this, off2048, off1024,
                         Config.replace2048Bytes(), Config.replace1024Bytes()
                     ) { ok, detail ->
-                        runOnUiThread { showToast((if (ok) "完成：" else "失败：") + detail) }
+                        runOnUiThread {
+                            showToast((if (ok) "完成：" else "失败：") + detail)
+                            refreshRsaPatchStatus()
+                        }
                     }
                 } catch (e: Throwable) {
                     val detail = "RSA 配置无效：" + (e.message ?: e.javaClass.simpleName)
@@ -502,15 +570,25 @@ class InfoActivity : ComponentActivity() {
                 LyskVpnService.stop(this)
                 showToast("正在从自动备份还原 RSA…")
                 OfficialRsaRestorer.restoreBackup(this) { ok, detail ->
-                    runOnUiThread { showToast((if (ok) "完成：" else "失败：") + detail) }
+                    runOnUiThread {
+                        showToast((if (ok) "完成：" else "失败：") + detail)
+                        refreshRsaPatchStatus()
+                    }
                 }
             }
             else -> {
                 LyskVpnService.stop(this)
-                val action = if (mode == OfficialRsaRestorer.MODE_DELETE_IL2CPP) "删除 il2cpp 目录" else "恢复官方公钥"
+                val action = when (mode) {
+                    OfficialRsaRestorer.MODE_DELETE_IL2CPP -> "删除 il2cpp 目录"
+                    OfficialRsaRestorer.MODE_RESTORE_FROM_APK -> "从游戏 APK 重写 metadata"
+                    else -> "恢复官方公钥"
+                }
                 showToast("正在通过 Shizuku $action…")
                 OfficialRsaRestorer.restore(this, mode) { ok, detail ->
-                    runOnUiThread { showToast((if (ok) "完成：" else "失败：") + detail) }
+                    runOnUiThread {
+                        showToast((if (ok) "完成：" else "失败：") + detail)
+                        refreshRsaPatchStatus()
+                    }
                 }
             }
         }
@@ -538,6 +616,7 @@ class InfoActivity : ComponentActivity() {
     private fun restoreBuiltInRsaPem() {
         Config.restoreDefaultRsaBlocks(getSharedPreferences(Config.PREFS, Context.MODE_PRIVATE))
         showToast("已还原内置 2048/1024 位 PEM")
+        refreshRsaPatchStatus()
     }
 
     private fun exportCaCrt() {
@@ -612,6 +691,8 @@ fun MainScreen(
     isProxyRunning: Boolean,
     isShizukuConnected: Boolean,
     shizukuUid: Int?,
+    isRsaPatched: Boolean,
+    isRsaStatusChecking: Boolean,
     certStatus: String,
     logSnapshot: String,
     initialConfig: VpnConfig,
@@ -686,6 +767,20 @@ fun MainScreen(
         }
     }
 
+    LaunchedEffect(isShizukuConnected) {
+        if (!isShizukuConnected && activeDialog in setOf(
+                AppDialog.RSA_OPTIONS,
+                AppDialog.RSA_DELETE_CONFIRM,
+                AppDialog.RSA_APK_RESTORE_CONFIRM,
+                AppDialog.RSA_KEY_OPTIONS,
+                AppDialog.RSA_KEY_RESET_CONFIRM,
+                AppDialog.NLS_OPTIONS,
+                AppDialog.NLS_DELETE_CONFIRM
+            )) {
+            activeDialog = null
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -745,7 +840,14 @@ fun MainScreen(
 
                     HomeActionCard(
                         title = "RSA 公钥补丁",
-                        subtitle = "修改 metadata 中的 2048/1024 位公钥",
+                        subtitle = when {
+                            !isShizukuConnected -> "连接 Shizuku 后可用"
+                            isRsaStatusChecking -> "正在检查 metadata 中的 RSA…"
+                            isRsaPatched -> "已匹配当前导入的 2048/1024 位公钥"
+                            else -> "修改 metadata 中的 2048/1024 位公钥"
+                        },
+                        enabled = isShizukuConnected && !isRsaStatusChecking,
+                        highlighted = isRsaPatched,
                         primaryText = "立即补丁",
                         onPrimaryClick = onPatchRsa,
                         secondaryText = "还原",
@@ -756,7 +858,12 @@ fun MainScreen(
 
                     HomeActionCard(
                         title = "NLS 语音资源",
-                        subtitle = "安装或还原配套 Solver ZIP/NX",
+                        subtitle = if (isShizukuConnected) {
+                            "安装或还原配套 Solver ZIP/NX"
+                        } else {
+                            "连接 Shizuku 后可用"
+                        },
+                        enabled = isShizukuConnected,
                         primaryText = "安装 ZIP",
                         onPrimaryClick = onSelectNlsZip,
                         secondaryText = "还原",
@@ -1087,6 +1194,7 @@ fun MainScreen(
 private enum class AppDialog {
     RSA_OPTIONS,
     RSA_DELETE_CONFIRM,
+    RSA_APK_RESTORE_CONFIRM,
     RSA_KEY_OPTIONS,
     RSA_KEY_RESET_CONFIRM,
     NLS_OPTIONS,
@@ -1109,6 +1217,7 @@ private fun AppDialogHost(
     val title = when (activeDialog) {
         AppDialog.RSA_OPTIONS -> "恢复 RSA"
         AppDialog.RSA_DELETE_CONFIRM -> "重建 il2cpp？"
+        AppDialog.RSA_APK_RESTORE_CONFIRM -> "从游戏 APK 重写？"
         AppDialog.RSA_KEY_OPTIONS -> "导入新公钥"
         AppDialog.RSA_KEY_RESET_CONFIRM -> "还原内置 PEM？"
         AppDialog.NLS_OPTIONS -> "还原 NLS 语音资源"
@@ -1123,6 +1232,8 @@ private fun AppDialogHost(
         } else {
             "仅当 Shizuku 以 Root 模式运行时可用。"
         }
+        AppDialog.RSA_APK_RESTORE_CONFIRM ->
+            "将先校验游戏 APK 内的原始文件，再停止游戏并完整覆盖当前 global-metadata.dat。"
         AppDialog.RSA_KEY_OPTIONS -> "分别选择 2048 位和 1024 位 RSA 公钥 PEM"
         AppDialog.RSA_KEY_RESET_CONFIRM -> "将清除已导入的两把公钥，恢复应用内置的 2048/1024 位 PEM。"
         AppDialog.NLS_OPTIONS -> "选择从备份恢复，或移除已安装的资源文件"
@@ -1160,6 +1271,11 @@ private fun AppDialogHost(
                         }
                     )
                     BasicComponent(
+                        title = "从游戏 APK 重写 metadata",
+                        summary = "提取安装包内原始文件并完整覆盖",
+                        onClick = { onDialogChange(AppDialog.RSA_APK_RESTORE_CONFIRM) }
+                    )
+                    BasicComponent(
                         title = "重建 il2cpp",
                         titleColor = BasicComponentDefaults.titleColor(MiuixTheme.colorScheme.error),
                         summary = if (isShizukuRoot) {
@@ -1188,6 +1304,18 @@ private fun AppDialogHost(
                     onConfirm = {
                         onDismiss()
                         onRestoreRsa(OfficialRsaRestorer.MODE_DELETE_IL2CPP)
+                    }
+                )
+            }
+
+            AppDialog.RSA_APK_RESTORE_CONFIRM -> {
+                DialogActionButtons(
+                    confirmText = "校验并重写",
+                    destructive = false,
+                    onDismiss = onDismiss,
+                    onConfirm = {
+                        onDismiss()
+                        onRestoreRsa(OfficialRsaRestorer.MODE_RESTORE_FROM_APK)
                     }
                 )
             }
@@ -1514,6 +1642,8 @@ private fun ShizukuStatusBadge(
 private fun HomeActionCard(
     title: String,
     subtitle: String,
+    enabled: Boolean = true,
+    highlighted: Boolean = false,
     primaryText: String,
     onPrimaryClick: () -> Unit,
     secondaryText: String,
@@ -1521,13 +1651,24 @@ private fun HomeActionCard(
     tertiaryText: String? = null,
     onTertiaryClick: (() -> Unit)? = null
 ) {
+    val colors = MiuixTheme.colorScheme
+    val activeContainer = if (isSystemInDarkTheme()) Color(0xFF1A3825) else Color(0xFFDFFAE4)
+    val disabledContainer = lerp(colors.surfaceContainer, colors.surface, 0.68f)
     Card(
         modifier = Modifier.fillMaxWidth(),
-        insideMargin = PaddingValues(0.dp)
+        insideMargin = PaddingValues(0.dp),
+        colors = CardDefaults.defaultColors(
+            color = when {
+                !enabled -> disabledContainer
+                highlighted -> activeContainer
+                else -> colors.surfaceContainer
+            }
+        )
     ) {
         BasicComponent(
             title = title,
-            summary = subtitle
+            summary = subtitle,
+            enabled = enabled
         )
         Row(
             modifier = Modifier
@@ -1539,12 +1680,14 @@ private fun HomeActionCard(
             HomeActionButton(
                 text = primaryText,
                 primary = true,
+                enabled = enabled,
                 onClick = onPrimaryClick,
                 modifier = Modifier.weight(1f)
             )
             HomeActionButton(
                 text = secondaryText,
                 primary = false,
+                enabled = enabled,
                 onClick = onSecondaryClick,
                 modifier = Modifier.weight(1f)
             )
@@ -1552,6 +1695,7 @@ private fun HomeActionCard(
                 HomeActionButton(
                     text = tertiaryText,
                     primary = false,
+                    enabled = enabled,
                     onClick = onTertiaryClick,
                     modifier = Modifier.weight(1f)
                 )
@@ -1564,11 +1708,13 @@ private fun HomeActionCard(
 private fun HomeActionButton(
     text: String,
     primary: Boolean,
+    enabled: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Button(
         onClick = onClick,
+        enabled = enabled,
         modifier = modifier.height(46.dp),
         colors = if (primary) ButtonDefaults.buttonColorsPrimary() else ButtonDefaults.buttonColors(),
         insideMargin = PaddingValues(horizontal = 8.dp)

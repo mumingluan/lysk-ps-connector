@@ -12,5 +12,6 @@ interface IShizukuRsaService {
     String restoreNls(in ParcelFileDescriptor backupZip, in ParcelFileDescriptor backupNx,
         String zipName, String nxName) = 5;
     String deleteNls(String zipName, String nxName) = 6;
+    String restoreMetadataFromApk() = 7;
     void destroy() = 16777114;
 }

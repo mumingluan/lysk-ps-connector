@@ -1,10 +1,13 @@
 package com.axuan.lyskps;
 
 import android.content.Context;
+import android.content.pm.ApplicationInfo;
 import android.os.ParcelFileDescriptor;
 import android.system.Os;
 
 import java.io.ByteArrayOutputStream;
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -13,6 +16,10 @@ import java.io.OutputStream;
 import java.io.RandomAccessFile;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.Enumeration;
+import java.util.zip.CRC32;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 
 /** Shizuku UserService：以 Shizuku 的 shell/root 身份补丁、恢复 RSA 或重建游戏 il2cpp 数据。 */
 public final class ShizukuRsaService extends IShizukuRsaService.Stub {
@@ -24,6 +31,8 @@ public final class ShizukuRsaService extends IShizukuRsaService.Stub {
     private static final String XFILEZIP = GAME_FILES + "/XFileZip";
     private static final String XPACKAGE = GAME_FILES + "/XPackage";
     private static final String SHARED_STAGE = "/storage/emulated/0/Download";
+    private static final String APK_METADATA =
+            "assets/bin/Data/Managed/Metadata/global-metadata.dat";
     private static final long OFF_2048 = 0x22aee2fL;
     private static final long OFF_1024 = 0x22af00fL;
     private Context context;
@@ -228,6 +237,110 @@ public final class ShizukuRsaService extends IShizukuRsaService.Stub {
         }
     }
 
+    @Override
+    public String restoreMetadataFromApk() {
+        File staged = new File("/data/local/tmp/lyskps_metadata_"
+                + Long.toUnsignedString(System.nanoTime()) + ".tmp");
+        try {
+            if (context == null) return fail("Shizuku UserService 未获得客户端 Context");
+            File metadata = new File(META);
+            if (!metadata.isFile()) return fail("找不到现有 global-metadata.dat，请先启动游戏完成解包");
+
+            ApkMetadataSource source = findApkMetadata();
+            long expectedSize = source.entry.getSize();
+            if (expectedSize < 1024 * 1024L) {
+                source.close();
+                return fail("游戏 APK 内的 metadata 大小异常");
+            }
+            try {
+                extractAndVerify(source, staged);
+            } finally {
+                source.close();
+            }
+
+            // 先验证现有文件可写，避免打开输出流后才发现权限不足。
+            try (RandomAccessFile ignored = new RandomAccessFile(metadata, "rw")) {}
+            String stopped = stopGame();
+            if (stopped != null) return fail(stopped);
+
+            try (InputStream input = new BufferedInputStream(new FileInputStream(staged), 1024 * 1024);
+                 FileOutputStream fileOutput = new FileOutputStream(metadata, false);
+                 OutputStream output = new BufferedOutputStream(fileOutput, 1024 * 1024)) {
+                copy(input, output);
+                output.flush();
+                try { fileOutput.getFD().sync(); } catch (Throwable ignored) {}
+            }
+            if (metadata.length() != expectedSize) {
+                return fail("写入后的 metadata 大小校验失败");
+            }
+            return ok("已从游戏 APK 重写 global-metadata.dat（"
+                    + formatMiB(expectedSize) + " MiB）");
+        } catch (Throwable t) {
+            return fail(t.getClass().getSimpleName() + ": " + safeMessage(t));
+        } finally {
+            try { if (staged.exists()) staged.delete(); } catch (Throwable ignored) {}
+        }
+    }
+
+    private ApkMetadataSource findApkMetadata() throws Exception {
+        ApplicationInfo info = context.getPackageManager().getApplicationInfo(TARGET, 0);
+        String[] paths;
+        if (info.splitSourceDirs == null || info.splitSourceDirs.length == 0) {
+            paths = new String[]{info.sourceDir};
+        } else {
+            paths = new String[info.splitSourceDirs.length + 1];
+            paths[0] = info.sourceDir;
+            System.arraycopy(info.splitSourceDirs, 0, paths, 1, info.splitSourceDirs.length);
+        }
+        for (String path : paths) {
+            ZipFile zip = new ZipFile(path);
+            ZipEntry entry = zip.getEntry(APK_METADATA);
+            if (entry != null && !entry.isDirectory()) return new ApkMetadataSource(zip, entry);
+            zip.close();
+        }
+        for (String path : paths) {
+            ZipFile zip = new ZipFile(path);
+            Enumeration<? extends ZipEntry> entries = zip.entries();
+            while (entries.hasMoreElements()) {
+                ZipEntry entry = entries.nextElement();
+                if (!entry.isDirectory() && entry.getName().endsWith("/global-metadata.dat")) {
+                    return new ApkMetadataSource(zip, entry);
+                }
+            }
+            zip.close();
+        }
+        throw new IllegalStateException("游戏 APK 内找不到原始 global-metadata.dat");
+    }
+
+    private static void extractAndVerify(ApkMetadataSource source, File destination)
+            throws Exception {
+        CRC32 crc = new CRC32();
+        long written = 0;
+        try (InputStream input = new BufferedInputStream(
+                source.zip.getInputStream(source.entry), 1024 * 1024);
+             OutputStream output = new BufferedOutputStream(
+                     new FileOutputStream(destination, false), 1024 * 1024)) {
+            byte[] buffer = new byte[1024 * 1024];
+            int count;
+            while ((count = input.read(buffer)) != -1) {
+                output.write(buffer, 0, count);
+                crc.update(buffer, 0, count);
+                written += count;
+            }
+        }
+        if (written != source.entry.getSize() || destination.length() != written) {
+            throw new IllegalStateException("APK metadata 解压大小校验失败");
+        }
+        long expectedCrc = source.entry.getCrc();
+        if (expectedCrc != -1 && crc.getValue() != expectedCrc) {
+            throw new IllegalStateException("APK metadata CRC 校验失败");
+        }
+    }
+
+    private static String formatMiB(long bytes) {
+        return String.format(java.util.Locale.US, "%.1f", bytes / 1048576.0);
+    }
+
     private static void validateNlsNames(String zipName, String nxName) {
         if (zipName == null || nxName == null
                 || !zipName.matches("[0-9]+\\.zip") || !nxName.matches("[0-9]+\\.nx")
@@ -391,5 +504,17 @@ public final class ShizukuRsaService extends IShizukuRsaService.Stub {
         final int code;
         final String output;
         CommandResult(int code, String output) { this.code = code; this.output = output; }
+    }
+
+    private static final class ApkMetadataSource {
+        final ZipFile zip;
+        final ZipEntry entry;
+        ApkMetadataSource(ZipFile zip, ZipEntry entry) {
+            this.zip = zip;
+            this.entry = entry;
+        }
+        void close() {
+            try { zip.close(); } catch (Throwable ignored) {}
+        }
     }
 }
