@@ -75,6 +75,8 @@ final class SolverNlsArchive {
                 long uncompressedSize = readU32(input);
                 int nameLength = readU16(input);
                 int extraLength = readU16(input);
+                if ((flags & 0x0001) != 0) throw new IllegalArgumentException("不支持加密 NLS ZIP");
+                if (uncompressedSize > 256L * 1024 * 1024) throw new IllegalArgumentException("NLS 成员解压大小超出限制");
                 if ((flags & 0x0008) != 0) {
                     throw new IllegalArgumentException("ZIP 使用了不支持的数据描述符");
                 }
@@ -103,6 +105,7 @@ final class SolverNlsArchive {
                         byte[] buffer = new byte[128 * 1024];
                         int count;
                         while ((count = decoded.read(buffer)) != -1) {
+                            if(written+count>uncompressedSize)throw new IllegalArgumentException("NX 解压大小超出声明长度");
                             target.write(buffer, 0, count);
                             checksum.update(buffer, 0, count);
                             written += count;

@@ -23,18 +23,18 @@ import java.util.zip.ZipFile;
 
 /** Shizuku UserService：以 Shizuku 的 shell/root 身份补丁、恢复 RSA 或重建游戏 il2cpp 数据。 */
 public final class ShizukuRsaService extends IShizukuRsaService.Stub {
-    private static final String TARGET = "com.papegames.lysk.cn";
-    private static final String IL2CPP = "/storage/emulated/0/Android/data/" + TARGET
-            + "/files/il2cpp";
-    private static final String META = IL2CPP + "/Metadata/global-metadata.dat";
-    private static final String GAME_FILES = "/storage/emulated/0/Android/data/" + TARGET + "/files";
-    private static final String XFILEZIP = GAME_FILES + "/XFileZip";
-    private static final String XPACKAGE = GAME_FILES + "/XPackage";
+    private String TARGET, IL2CPP, META, GAME_FILES, XFILEZIP, XPACKAGE;
+    @Override public synchronized void selectTarget(String packageName) {
+        String pkg=GameTarget.validate(packageName);
+        if(TARGET!=null&&!TARGET.equals(pkg))throw new IllegalStateException("操作目标已经锁定");
+        TARGET=pkg;GAME_FILES=GameTarget.files(pkg);IL2CPP=GAME_FILES+"/il2cpp";
+        META=IL2CPP+"/Metadata/global-metadata.dat";XFILEZIP=GAME_FILES+"/XFileZip";XPACKAGE=GAME_FILES+"/XPackage";
+    }
+    @Override public long[] locateRsa(){try{return RsaLocator.locate(new File(META));}catch(Exception e){throw new IllegalStateException(e.getMessage(),e);}}
+    @Override public String metadataFingerprint(){try{return RsaLocator.fingerprint(new File(META),locateRsa());}catch(Exception e){throw new IllegalStateException(e.getMessage(),e);}}
     private static final String SHARED_STAGE = "/storage/emulated/0/Download";
     private static final String APK_METADATA =
             "assets/bin/Data/Managed/Metadata/global-metadata.dat";
-    private static final long OFF_2048 = 0x22aee2fL;
-    private static final long OFF_1024 = 0x22af00fL;
     private Context context;
 
     /** Shizuku API 13 会优先使用带 Context 的构造器。 */
@@ -55,6 +55,8 @@ public final class ShizukuRsaService extends IShizukuRsaService.Stub {
             if (!metadata.isFile()) return fail("找不到 global-metadata.dat，请先让游戏生成该文件");
             String stopped = stopGame();
             if (stopped != null) return fail(stopped);
+            long[] actual=locateRsa();
+            if(actual[0]!=off2048||actual[1]!=off1024)return fail("RSA 位置已变化，请重新扫描");
             String result = writePair(metadata, off2048, replacement2048,
                     off1024, replacement1024);
             if (!"ok".equals(result) && !"already".equals(result)) return fail(result);
@@ -91,6 +93,12 @@ public final class ShizukuRsaService extends IShizukuRsaService.Stub {
         }
     }
 
+    @Override public String validateNls(ParcelFileDescriptor sourceNx,String nxName){
+        try {if(nxName==null||!nxName.matches("[0-9]+\\.nx"))return "无效的 NX 名称";
+            try(InputStream original=new BufferedInputStream(new FileInputStream(new File(XPACKAGE,nxName)));InputStream patched=new BufferedInputStream(new ParcelFileDescriptor.AutoCloseInputStream(sourceNx))){NlsCompatibility.verify(original,patched);}return "ok";
+        } catch(Exception e){return safeMessage(e);}
+    }
+
     @Override
     public String installNls(ParcelFileDescriptor sourceZip, ParcelFileDescriptor sourceNx,
                              ParcelFileDescriptor backupZip, ParcelFileDescriptor backupNx,
@@ -105,6 +113,8 @@ public final class ShizukuRsaService extends IShizukuRsaService.Stub {
             }
             String stopped = stopGame();
             if (stopped != null) return fail(stopped);
+            try(InputStream original=new BufferedInputStream(new FileInputStream(targetNx));InputStream patched=new BufferedInputStream(new ParcelFileDescriptor.AutoCloseInputStream(ParcelFileDescriptor.dup(sourceNx.getFileDescriptor())))){NlsCompatibility.verify(original,patched);}
+            Os.lseek(sourceNx.getFileDescriptor(),0,android.system.OsConstants.SEEK_SET);
             if ((backupZip == null) != (backupNx == null)) return fail("NLS 备份文件描述符不完整");
             if (backupZip != null) {
                 copyFileToDescriptor(targetZip, backupZip);
@@ -187,9 +197,14 @@ public final class ShizukuRsaService extends IShizukuRsaService.Stub {
             if (context == null) return fail("Shizuku UserService 未获得客户端 Context");
             if (!metadata.isFile()) return fail("找不到 global-metadata.dat，可使用重建 il2cpp 后直接启动游戏");
 
-            byte[] official2048 = Config.orig2048Bytes();
-            byte[] official1024 = Config.orig1024Bytes();
-            String result = writePair(metadata, OFF_2048, official2048, OFF_1024, official1024);
+            File extracted=File.createTempFile("lysk-rsa-", ".metadata", new File("/data/local/tmp"));
+            String result;
+            try {
+                try(ApkMetadataSource source=findApkMetadata()){extractAndVerify(source,extracted);}
+                long[] original=RsaLocator.locate(extracted),target=locateRsa();
+                if(!RsaLocator.fingerprint(extracted,original).equals(metadataFingerprint()))return fail("已安装 APK 与当前 metadata 版本不同，请使用当前版本备份恢复");
+                try(RandomAccessFile raf=new RandomAccessFile(extracted,"r")){result=writePair(metadata,target[0],readAt(raf,original[0],480),target[1],readAt(raf,original[1],243));}
+            } finally {extracted.delete();}
             if (!"ok".equals(result) && !"already".equals(result)) return fail(result);
             return ok("already".equals(result) ? "当前已经是官方 RSA" : "两处官方 RSA 已恢复");
         } catch (Throwable t) {
@@ -350,7 +365,7 @@ public final class ShizukuRsaService extends IShizukuRsaService.Stub {
         }
     }
 
-    private static String stopGame() throws Exception {
+    private String stopGame() throws Exception {
         CommandResult stopped = runCommand("am", "force-stop", TARGET);
         return stopped.code == 0 ? null
                 : "无法停止游戏，exit=" + stopped.code + suffix(stopped.output);
@@ -506,14 +521,14 @@ public final class ShizukuRsaService extends IShizukuRsaService.Stub {
         CommandResult(int code, String output) { this.code = code; this.output = output; }
     }
 
-    private static final class ApkMetadataSource {
+    private static final class ApkMetadataSource implements AutoCloseable {
         final ZipFile zip;
         final ZipEntry entry;
         ApkMetadataSource(ZipFile zip, ZipEntry entry) {
             this.zip = zip;
             this.entry = entry;
         }
-        void close() {
+        public void close() {
             try { zip.close(); } catch (Throwable ignored) {}
         }
     }

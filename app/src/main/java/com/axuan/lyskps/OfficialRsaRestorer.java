@@ -27,8 +27,10 @@ public final class OfficialRsaRestorer {
     public static final int MODE_APPLY_PRIVATE = 3;
     public static final int MODE_RESTORE_BACKUP = 4;
     public static final int MODE_RESTORE_FROM_APK = 5;
+    private static final int MODE_CHECK = 6;
     private static final Set<Operation> ACTIVE_OPERATIONS = Collections.newSetFromMap(
             new ConcurrentHashMap<Operation, Boolean>());
+    static boolean isBusy(){for(Operation op:ACTIVE_OPERATIONS)if(op.mode!=MODE_CHECK)return true;return false;}
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
 
     public interface Callback {
@@ -47,8 +49,9 @@ public final class OfficialRsaRestorer {
     }
 
     public static void restoreBackup(Context context, Callback callback) {
+        context=GameTarget.freeze(context);
         try {
-            RsaBackupStore.Backup backup = RsaBackupStore.load(context.getApplicationContext());
+            RsaBackupStore.Backup backup = RsaBackupStore.load(GameTarget.freeze(context));
             execute(context, MODE_RESTORE_BACKUP, backup.off2048, backup.off1024,
                     backup.block2048, backup.block1024, callback);
         } catch (Throwable t) {
@@ -59,66 +62,19 @@ public final class OfficialRsaRestorer {
     public static void checkPatched(Context context, long off2048, long off1024,
                                     byte[] replacement2048, byte[] replacement1024,
                                     Callback callback) {
-        new Thread(() -> {
-            try {
-                if (!Shizuku.pingBinder()
-                        || Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
-                    callback(callback, false, "not ready");
-                    return;
-                }
-                byte[] current2048 = readRemoteBlock(off2048, replacement2048.length);
-                byte[] current1024 = readRemoteBlock(off1024, replacement1024.length);
-                boolean matches = Arrays.equals(current2048, replacement2048)
-                        && Arrays.equals(current1024, replacement1024);
-                callback(callback, matches, matches ? "matched" : "different");
-            } catch (Throwable ignored) {
-                callback(callback, false, "unavailable");
-            }
-        }, "lyskps-rsa-status").start();
-    }
-
-    private static byte[] readRemoteBlock(long offset, int length) throws Exception {
-        if (offset < 0 || length <= 0) throw new IllegalArgumentException("RSA 读取范围无效");
-        Method method = Shizuku.class.getDeclaredMethod("newProcess",
-                String[].class, String[].class, String.class);
-        method.setAccessible(true);
-        Process process = (Process) method.invoke(null,
-                new Object[]{new String[]{"dd",
-                        "if=/storage/emulated/0/Android/data/com.papegames.lysk.cn/files/il2cpp/Metadata/global-metadata.dat",
-                        "bs=1", "skip=" + offset, "count=" + length, "status=none"}, null, null});
-        byte[] output;
-        try (InputStream input = process.getInputStream()) {
-            output = readAll(input);
-        }
-        byte[] error;
-        try (InputStream input = process.getErrorStream()) {
-            error = readAll(input);
-        }
-        int code = process.waitFor();
-        if (code != 0 || output.length != length) {
-            throw new IllegalStateException("读取 metadata 失败，exit=" + code
-                    + (error.length == 0 ? "" : "：" + new String(error)));
-        }
-        return output;
-    }
-
-    private static byte[] readAll(InputStream input) throws Exception {
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        byte[] buffer = new byte[1024];
-        int count;
-        while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
-        return output.toByteArray();
+        execute(context, MODE_CHECK, 0, 0, replacement2048, replacement1024, callback);
     }
 
     private static void execute(Context context, int mode, long off2048, long off1024,
                                 byte[] replacement2048, byte[] replacement1024,
                                 Callback callback) {
-        Context app = context.getApplicationContext();
+        if(mode==MODE_CHECK&&isBusy()){complete(callback,false,"busy");return;}
+        Context app = GameTarget.freeze(context);
         VpnLog.init(app);
         VpnLog.i("RSA", "提交 Shizuku 操作：" + actionName(mode));
         if (mode != MODE_RESTORE_BLOCKS && mode != MODE_DELETE_IL2CPP
                 && mode != MODE_APPLY_PRIVATE && mode != MODE_RESTORE_BACKUP
-                && mode != MODE_RESTORE_FROM_APK) {
+                && mode != MODE_RESTORE_FROM_APK && mode != MODE_CHECK) {
             complete(callback, false, "未知 RSA 操作");
             return;
         }
@@ -148,9 +104,9 @@ public final class OfficialRsaRestorer {
             Shizuku.UserServiceArgs args = new Shizuku.UserServiceArgs(
                     new ComponentName(app.getPackageName(), ShizukuRsaService.class.getName()))
                     .daemon(false)
-                    .processNameSuffix("rsa_file")
+                    .processNameSuffix((mode==MODE_CHECK?"rsa_check_":"rsa_file_")+GameTarget.selected(app).substring(GameTarget.selected(app).lastIndexOf('.')+1))
                     .debuggable(false)
-                    .version(6);
+                    .version(7);
             Operation operation = new Operation(app, args, mode, off2048, off1024,
                     replacement2048, replacement1024, callback);
             ACTIVE_OPERATIONS.add(operation);
@@ -169,8 +125,8 @@ public final class OfficialRsaRestorer {
         private final Context app;
         private final Shizuku.UserServiceArgs args;
         private final int mode;
-        private final long off2048;
-        private final long off1024;
+        private long off2048;
+        private long off1024;
         private final byte[] replacement2048;
         private final byte[] replacement1024;
         private final Callback callback;
@@ -200,8 +156,19 @@ public final class OfficialRsaRestorer {
             new Thread(() -> {
                 try {
                     IShizukuRsaService service = IShizukuRsaService.Stub.asInterface(binder);
+                    service.selectTarget(GameTarget.selected(app));
+                    if(mode==MODE_CHECK){long[] pos=service.locateRsa();byte[] current=service.readRsaBlocks(pos[0],pos[1]);boolean matches=Arrays.equals(Arrays.copyOfRange(current,0,480),replacement2048)&&Arrays.equals(Arrays.copyOfRange(current,480,723),replacement1024);finish(matches,matches?"matched":"different");return;}
+                    String fingerprint="";
+                    if(mode==MODE_APPLY_PRIVATE||mode==MODE_RESTORE_BACKUP){
+                        long[] offsets=service.locateRsa();off2048=offsets[0];off1024=offsets[1];fingerprint=service.metadataFingerprint();
+                        if(mode==MODE_RESTORE_BACKUP)RsaBackupStore.verifyVersion(app,fingerprint);
+                    }
                     String backupDetail = "";
                     if (mode == MODE_APPLY_PRIVATE) {
+                        byte[] currentBlocks=service.readRsaBlocks(off2048,off1024);
+                        boolean alreadyA=Arrays.equals(Arrays.copyOfRange(currentBlocks,0,480),replacement2048),alreadyB=Arrays.equals(Arrays.copyOfRange(currentBlocks,480,723),replacement1024);
+                        if(alreadyA&&alreadyB){finish(true,"当前客户端已匹配私服 RSA");return;}
+                        RsaBackupStore.prepareVersion(app,fingerprint,alreadyA||alreadyB);
                         File backupPath = RsaBackupStore.path(app);
                         if (!backupPath.isFile()) {
                             byte[] current = service.readRsaBlocks(off2048, off1024);
@@ -216,9 +183,11 @@ public final class OfficialRsaRestorer {
                                 return;
                             }
                             RsaBackupStore.saveIfAbsent(app, off2048, off1024, current);
+                            RsaBackupStore.saveVersion(app,fingerprint);
                             backupDetail = "已保存修补前 RSA 备份；";
                         } else {
                             RsaBackupStore.load(app);
+                            RsaBackupStore.verifyVersion(app,fingerprint);
                             backupDetail = "已保留现有 RSA 备份；";
                         }
                     }

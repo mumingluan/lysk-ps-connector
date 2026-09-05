@@ -6,7 +6,8 @@
 > 使用者应自行确认当地法律、服务条款和账号风险。
 
 包名：`com.axuan.lyskps`  
-目标游戏：`com.papegames.lysk.cn`  
+默认分流应用：`com.papegames.lysk.cn`、`com.papegames.lysk.tw`、`com.papegames.lysk.jp`、`com.papegames.lysk.en`、`com.papegames.lysk.kr`
+
 最低系统：Android 7.0（API 24）
 
 ## 功能
@@ -17,7 +18,7 @@
 - NLS 可从应用私有备份成对还原，或删除已安装的 ZIP/NX 让游戏重新获取官方资源。
 - 提供独立的“启动恋与深空”按钮。
 - 集成 `ShizukuProvider`；首次执行 RSA 文件操作前，请启动 Shizuku 并授权本客户端。
-- RSA 公钥块和当前客户端偏移默认保存在 `Config.java`，文件操作由 Shizuku UserService 完成。
+- 替换用 RSA 公钥保存在客户端配置中；扫描 metadata 中唯一的一组相邻 480/243 字节 RSA XML 块定位，版本变化无需手动填写偏移。文件操作由 Shizuku UserService 完成。
 - 只接管指定应用的 `VpnService`；包名可填 `*`，表示除 LYSK-PS-Connector 自身外的全部应用。
 - 域名规则支持普通域名、`re:` 正则表达式和 `!` 直连排除；排除规则始终优先。
 - HTTP 代理模式：命中域名使用配置的 HTTP 代理。
@@ -56,12 +57,17 @@ VPN 数据面使用 [tun2proxy](https://github.com/tun2proxy/tun2proxy)，动态
 - `!re:^.+\.hotupdate\.papegames\.com$`：使用正则表达式排除。
 
 排除规则与包含规则同时命中时，结果为 `DIRECT-EXCLUDED`。
-新安装的内置列表默认包含 `papegames.com` 和 `papegames.cn`，并排除
-`x3cn-client-*.papegames.com` 热更 CDN 使其直连。
+内置列表包含 `papegames.com`、`papegames.cn` 和 `infoldgames.com`，资源下载排除规则为：
+
+```text
+!re:^x3[a-z]+-client-[a-z0-9-]+\.(?:papegames|infoldgames)\.com$
+```
+
+地区代码使用正则通配，主 CDN 与 `-backup` 资源域名均直连，登录、风控和 Gate 域名继续分流。升级时自动扩展旧版默认域名及单国服应用列表；自定义列表（包括 `*`）保持用户设置。首页选择已安装的目标客户端后，RSA/NLS 文件操作、备份与启动按钮均使用该客户端目录。选择目标独立于 VPN 应用分流列表；文件操作开始时锁定目标。
 
 ### HTTPS 包装器证书
 
-启用包装器后，首次启动会在应用私有目录随机生成 CA pair 和默认 Leaf pair。可在页面中：
+启用包装器后，首次启动会在应用私有目录随机生成 CA pair 和默认 Leaf pair。默认 Leaf SAN 包含 `papegames.com`、`*.papegames.com`、`infoldgames.com`、`*.infoldgames.com`；已有自动生成的 Leaf 在加载时更新并沿用原 CA，手动导入的固定证书保持不变。动态叶证书按实际目标主机签发。可在页面中：
 
 - 分别导入 CA 证书/私钥、Leaf 证书/私钥；只有配对校验成功才会启用；
 - 导出 `LYSK-PS-Connector-CA.crt`；
@@ -125,3 +131,15 @@ python tools/generate_icons.py
 ## 许可证
 
 项目代码使用 [MIT License](LICENSE)。第三方组件遵循各自许可证。
+
+## 多客户端 RSA 与 Solver NLS
+
+- 目标支持国服、台服、日服、英服和韩服，只列出本机已安装客户端。
+- RSA 不再使用国服固定偏移。缺少或存在多组候选公钥时拒绝写入；补丁后回读两块内容。
+- 官方公钥从所选客户端已安装 APK 的 metadata 提取，不将国服内置原公钥写入外服。仅公钥恢复要求 APK 与现有 metadata 的非公钥内容指纹一致。
+- RSA 备份按客户端隔离，并保存 metadata 去除公钥区域后的 SHA-256；恢复时核对版本。未打补丁的新版本会归档旧备份后重新备份，旧版无指纹备份不会直接覆盖当前 metadata。
+- NLS 使用 Pape-ResSolver `client-patch` 输出的数字 ZIP：method-14/XZ 压缩，同名 NX，原始长度和 CRC 校验。安装位置分别是当前客户端的 `files/XFileZip` 和 `files/XPackage`。
+- 安装和备份恢复要求当前 NX 与补丁/备份长度相同，变化限制在一个最多 128 字节的区间内，适配 Solver 的单个等长 AppKey 替换。其他版本/区域资源不可凭相同包名安装；需从对应资源重新生成。
+- NLS 备份与安装记录按客户端隔离；国服继续使用已有备份位置。不会将某服补丁自动转换为其他服补丁。
+
+离线验证的四外服 6.0.0 APK 均包含唯一相邻 RSA 块，起点为 36367919 与 36368399；这些值仅用于验证扫描结果，不作为运行时偏移。测试涵盖扫描缓冲区边界、歧义拒绝、指纹稳定性、NLS 兼容性以及分流规则。实际 Shizuku 跨客户端写入仍需设备验证。

@@ -32,7 +32,7 @@ final class RsaBackupStore {
     }
 
     static File path(Context context) {
-        return new File(new File(context.getFilesDir(), "backups/rsa"), "global-metadata.rsa.bak");
+        return new File(GameTarget.backup(context, "rsa"), "global-metadata.rsa.bak");
     }
 
     static synchronized boolean saveIfAbsent(Context context, long off2048, long off1024,
@@ -93,5 +93,17 @@ final class RsaBackupStore {
         }
     }
 
+    static void prepareVersion(Context c,String value,boolean partlyPatched)throws IOException {
+        if(!path(c).isFile())return;
+        try{verifyVersion(c,value);return;}catch(IOException mismatch){
+            if(partlyPatched)throw new IOException("当前 RSA 已部分补丁且没有匹配版本备份，请从对应 APK 恢复");
+            File history=new File(path(c).getParentFile(),"history/"+System.currentTimeMillis());
+            if(!history.mkdirs()||!path(c).renameTo(new File(history,path(c).getName())))throw new IOException("无法归档旧 RSA 备份");
+            File version=new File(path(c).getParentFile(),"metadata.sha256");
+            if(version.exists()&&!version.renameTo(new File(history,"metadata.sha256")))throw new IOException("无法归档旧 RSA 备份指纹");
+        }
+    }
+    static void saveVersion(Context c,String value)throws IOException {try(FileOutputStream out=new FileOutputStream(new File(path(c).getParentFile(),"metadata.sha256"))){out.write(value.getBytes(java.nio.charset.StandardCharsets.US_ASCII));out.getFD().sync();}}
+    static void verifyVersion(Context c,String value)throws IOException {File f=new File(path(c).getParentFile(),"metadata.sha256");if(!f.isFile())throw new IOException("旧备份没有版本指纹，请从对应客户端 APK 恢复官方公钥");byte[] b=new byte[64];try(FileInputStream in=new FileInputStream(f)){if(in.read(b)!=64||!value.equals(new String(b,java.nio.charset.StandardCharsets.US_ASCII)))throw new IOException("RSA 备份不属于当前 metadata 版本");}}
     private RsaBackupStore() {}
 }

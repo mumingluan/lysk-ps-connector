@@ -36,6 +36,7 @@ final class NlsResourceManager {
     private static final String KEY_NX = "nx_name";
     private static final Set<Operation> ACTIVE_OPERATIONS = Collections.newSetFromMap(
             new ConcurrentHashMap<Operation, Boolean>());
+    static boolean isBusy(){return !ACTIVE_OPERATIONS.isEmpty();}
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
 
     interface Callback {
@@ -47,6 +48,7 @@ final class NlsResourceManager {
     }
 
     static void restoreBackup(Context context, Callback callback) {
+        context=GameTarget.freeze(context);
         VpnLog.init(context.getApplicationContext());
         String[] names = storedNames(context);
         if (names == null) {
@@ -63,6 +65,7 @@ final class NlsResourceManager {
     }
 
     static void deleteInstalled(Context context, Callback callback) {
+        context=GameTarget.freeze(context);
         VpnLog.init(context.getApplicationContext());
         String[] names = storedNames(context);
         if (names == null) {
@@ -74,7 +77,7 @@ final class NlsResourceManager {
 
     private static void execute(Context context, int mode, SolverNlsArchive.Prepared prepared,
                                 String zipName, String nxName, Callback callback) {
-        Context app = context.getApplicationContext();
+        Context app = GameTarget.freeze(context);
         VpnLog.init(app);
         VpnLog.i("NLS", "提交 Shizuku 操作：" + actionName(mode));
         try {
@@ -88,9 +91,9 @@ final class NlsResourceManager {
             Shizuku.UserServiceArgs args = new Shizuku.UserServiceArgs(
                     new ComponentName(app.getPackageName(), ShizukuRsaService.class.getName()))
                     .daemon(false)
-                    .processNameSuffix("game_files")
+                    .processNameSuffix("game_files_"+GameTarget.selected(app).substring(GameTarget.selected(app).lastIndexOf('.')+1))
                     .debuggable(false)
-                    .version(6);
+                    .version(7);
             Operation operation = new Operation(app, args, mode, prepared, zipName, nxName, callback);
             ACTIVE_OPERATIONS.add(operation);
             try {
@@ -143,6 +146,7 @@ final class NlsResourceManager {
             File temporaryZip = null;
             File temporaryNx = null;
             try {
+                service.selectTarget(GameTarget.selected(app));
                 String result;
                 if (mode == MODE_INSTALL) {
                     File finalZip = backupFile(app, zipName);
@@ -166,6 +170,7 @@ final class NlsResourceManager {
                         result = service.installNls(sourceZip, sourceNx, closeBackupZip,
                                 closeBackupNx, zipName, nxName);
                     }
+                    if(result==null||!result.startsWith("OK\n"))throw new IOException(result==null?"NLS 校验没有返回结果":result);
                     if (!zipExists) {
                         commitBackup(temporaryZip, finalZip);
                         commitBackup(temporaryNx, finalNx);
@@ -173,17 +178,18 @@ final class NlsResourceManager {
                         temporaryNx = null;
                     }
                     if (result != null && result.startsWith("OK\n")) {
-                        replacePairThroughShizuku(prepared.zip, prepared.nx, zipName, nxName);
+                        replacePairThroughShizuku(app, prepared.zip, prepared.nx, zipName, nxName);
                         result = "OK\nNLS ZIP/NX 已替换并通过 shell 回读校验";
                     }
                 } else if (mode == MODE_RESTORE_BACKUP) {
-                    replacePairThroughShizuku(backupFile(app, zipName),
+                    try(ParcelFileDescriptor source=openRead(backupFile(app,nxName))){String check=service.validateNls(source,nxName);if(!"ok".equals(check))throw new IOException(check);}
+                    replacePairThroughShizuku(app, backupFile(app, zipName),
                             backupFile(app, nxName), zipName, nxName);
                     result = "OK\nNLS ZIP/NX 已从 connector 私有备份还原";
                 } else {
                     runRemote(new String[]{"sh", "-c",
-                            "am force-stop com.papegames.lysk.cn && rm -f \"$1\" \"$2\"",
-                            "sh", targetZip(zipName), targetNx(nxName)}, null);
+                            "am force-stop \"$3\" && rm -f \"$1\" \"$2\"",
+                            "sh", targetZip(app,zipName), targetNx(app,nxName),GameTarget.selected(app)}, null);
                     result = "OK\nNLS ZIP/NX 已删除";
                 }
                 boolean ok = result != null && result.startsWith("OK\n");
@@ -237,7 +243,7 @@ final class NlsResourceManager {
     }
 
     private static File backupDirectory(Context context) throws IOException {
-        File directory = new File(context.getFilesDir(), "backups/nls");
+        File directory = GameTarget.backup(context,"nls");
         if (!directory.isDirectory() && !directory.mkdirs()) {
             throw new IOException("无法创建 NLS 私有备份目录");
         }
@@ -245,7 +251,7 @@ final class NlsResourceManager {
     }
 
     private static File backupFile(Context context, String name) {
-        return new File(new File(context.getFilesDir(), "backups/nls"), name + ".original");
+        return new File(GameTarget.backup(context,"nls"), name + ".original");
     }
 
     private static ParcelFileDescriptor openRead(File file) throws IOException {
@@ -271,29 +277,34 @@ final class NlsResourceManager {
     }
 
     private static void saveNames(Context context, String zipName, String nxName) {
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+        context.getSharedPreferences(GameTarget.prefs(context,PREFS), Context.MODE_PRIVATE).edit()
                 .putString(KEY_ZIP, zipName).putString(KEY_NX, nxName).apply();
     }
 
-    private static void replacePairThroughShizuku(File zip, File nx,
+    private static void replacePairThroughShizuku(Context app, File zip, File nx,
                                                    String zipName, String nxName) throws Exception {
         validateNames(zipName, nxName);
         if (!zip.isFile() || zip.length() <= 0 || !nx.isFile() || nx.length() <= 0) {
             throw new IOException("NLS ZIP/NX 源文件不完整");
         }
-        runRemote(new String[]{"am", "force-stop", "com.papegames.lysk.cn"}, null);
+        runRemote(new String[]{"am", "force-stop", GameTarget.selected(app)}, null);
         String token = Long.toUnsignedString(System.nanoTime());
         replaceOne(zip, "/storage/emulated/0/Download/LYSKPS_" + token + "_" + zipName,
-                targetZip(zipName));
+                targetZip(app,zipName));
         replaceOne(nx, "/storage/emulated/0/Download/LYSKPS_" + token + "_" + nxName,
-                targetNx(nxName));
+                targetNx(app,nxName));
     }
 
     private static void replaceOne(File source, String stage, String target) throws Exception {
-        String command = "{ rm -f \"$1\"; cat > \"$1\"; chmod 660 \"$1\"; "
+        String command = "{ set -e; rm -f \"$1\"; cat > \"$1\"; chmod 660 \"$1\"; "
                 + "mv -f \"$1\" \"$2\"; test -s \"$2\"; } 2>&1";
         try (InputStream input = new FileInputStream(source)) {
             runRemote(new String[]{"sh", "-c", command, "sh", stage, target}, input);
+            java.security.MessageDigest digest=java.security.MessageDigest.getInstance("SHA-256");
+            try(InputStream verify=new FileInputStream(source)){byte[] data=new byte[131072];int n;while((n=verify.read(data))!=-1)digest.update(data,0,n);}
+            StringBuilder expected=new StringBuilder();for(byte value:digest.digest())expected.append(String.format(java.util.Locale.ROOT,"%02x",value&255));
+            String actual=runRemote(new String[]{"sha256sum",target},null);
+            if(!actual.startsWith(expected.toString()+" "))throw new IOException("NLS 写入后 SHA-256 回读校验失败");
         } catch (Throwable t) {
             try { runRemote(new String[]{"rm", "-f", stage}, null); }
             catch (Throwable ignored) {}
@@ -349,16 +360,16 @@ final class NlsResourceManager {
         }
     }
 
-    private static String targetZip(String name) {
-        return "/storage/emulated/0/Android/data/com.papegames.lysk.cn/files/XFileZip/" + name;
+    private static String targetZip(Context app,String name) {
+        return GameTarget.files(GameTarget.selected(app))+"/XFileZip/" + name;
     }
 
-    private static String targetNx(String name) {
-        return "/storage/emulated/0/Android/data/com.papegames.lysk.cn/files/XPackage/" + name;
+    private static String targetNx(Context app,String name) {
+        return GameTarget.files(GameTarget.selected(app))+"/XPackage/" + name;
     }
 
     private static String[] storedNames(Context context) {
-        SharedPreferences preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        SharedPreferences preferences = context.getSharedPreferences(GameTarget.prefs(context,PREFS), Context.MODE_PRIVATE);
         String zip = preferences.getString(KEY_ZIP, null);
         String nx = preferences.getString(KEY_NX, null);
         if (zip == null || nx == null || !zip.matches("[0-9]+\\.zip")

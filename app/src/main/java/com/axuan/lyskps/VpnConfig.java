@@ -11,8 +11,12 @@ public final class VpnConfig {
     public static final String PREFS = "lysk_vpn_config";
     public static final int MODE_PROXY = 101, MODE_REDIRECT = 102;
     private static final String LEGACY_DEFAULT_DOMAINS = "papegames.com\npapegames.cn";
-    public static final String DEFAULT_DOMAINS = LEGACY_DEFAULT_DOMAINS+"\n!re:^x3cn-client-[a-z0-9]+\\.papegames\\.com$";
-    public static final String DEFAULT_PACKAGES = "com.papegames.lysk.cn";
+    private static final String PREVIOUS_DEFAULT_DOMAINS = LEGACY_DEFAULT_DOMAINS+"\n!re:^x3cn-client-[a-z0-9]+\\.papegames\\.com$";
+    public static final String DEFAULT_DOMAINS = LEGACY_DEFAULT_DOMAINS+"\ninfoldgames.com"
+            +"\n!re:^x3[a-z]+-client-[a-z0-9-]+\\.(?:papegames|infoldgames)\\.com$";
+    private static final String LEGACY_DEFAULT_PACKAGES = "com.papegames.lysk.cn";
+    public static final String DEFAULT_PACKAGES = LEGACY_DEFAULT_PACKAGES
+            +"\ncom.papegames.lysk.tw\ncom.papegames.lysk.jp\ncom.papegames.lysk.en\ncom.papegames.lysk.kr";
     public final int mode; public final String proxyEndpoint, redirectEndpoint, endpoint, domainsText, packagesText;
     public final boolean redirectTlsWrapper;
     public final URI endpointUri; public final List<String> domains, packages;
@@ -23,9 +27,10 @@ public final class VpnConfig {
         String proxy=sp.getString("proxy_endpoint",mode==MODE_PROXY&&!legacy.isEmpty()?legacy:"http://127.0.0.1:8888");
         String redirect=sp.getString("redirect_endpoint",mode==MODE_REDIRECT&&!legacy.isEmpty()?legacy:"http://127.0.0.1:8088");
         String domains=migrateDomains(sp.getString("domains",DEFAULT_DOMAINS));
-        return fromInput(mode,proxy,redirect,sp.getBoolean("redirect_tls_wrapper",true),domains,sp.getString("packages",DEFAULT_PACKAGES));
+        return fromInput(mode,proxy,redirect,sp.getBoolean("redirect_tls_wrapper",true),domains,migratePackages(sp.getString("packages",DEFAULT_PACKAGES)));
     }
-    static String migrateDomains(String domains){return domains!=null&&LEGACY_DEFAULT_DOMAINS.equals(domains.trim())?DEFAULT_DOMAINS:domains;}
+    static String migrateDomains(String domains){return domains!=null&&(LEGACY_DEFAULT_DOMAINS.equals(domains.trim())||PREVIOUS_DEFAULT_DOMAINS.equals(domains.trim()))?DEFAULT_DOMAINS:domains;}
+    static String migratePackages(String packages){return packages!=null&&LEGACY_DEFAULT_PACKAGES.equals(packages.trim())?DEFAULT_PACKAGES:packages;}
     public static VpnConfig fromInput(int mode,String proxyEndpoint,String redirectEndpoint,boolean redirectTlsWrapper,String domains,String packages) {
         if (mode != MODE_PROXY && mode != MODE_REDIRECT) mode = MODE_REDIRECT;
         proxyEndpoint=proxyEndpoint.trim();redirectEndpoint=redirectEndpoint.trim();

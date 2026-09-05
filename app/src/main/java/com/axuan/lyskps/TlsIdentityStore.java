@@ -68,7 +68,7 @@ final class TlsIdentityStore {
         caCert=readCert(caC);caKey=readKey(caK);verifyPair(caCert,caKey);
         importedLeaf=app.getSharedPreferences(VpnConfig.PREFS,0).getBoolean("leaf_imported",false);
         File leafC=file("leaf.crt"),leafK=file("leaf.key");
-        if(!leafC.exists()||!leafK.exists()||!importedLeaf){KeyPair pair=keyPair();X509Certificate cert=issueLeaf(new String[]{"papegames.com","*.papegames.com"},pair.getPublic());write(leafC,cert.getEncoded());write(leafK,pair.getPrivate().getEncoded());importedLeaf=false;}
+        if(!leafC.exists()||!leafK.exists()||!importedLeaf){KeyPair pair=keyPair();X509Certificate cert=issueLeaf(new String[]{"papegames.com","*.papegames.com","infoldgames.com","*.infoldgames.com"},pair.getPublic());write(leafC,cert.getEncoded());write(leafK,pair.getPrivate().getEncoded());importedLeaf=false;}
         fixedLeaf=readCert(leafC);fixedLeafKey=readKey(leafK);verifyPair(fixedLeaf,fixedLeafKey);
     }
 

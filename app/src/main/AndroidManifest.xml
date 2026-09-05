@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
-    android:versionCode="14"
-    android:versionName="3.2">
+    android:versionCode="15"
+    android:versionName="4.0">
 
     <uses-sdk tools:overrideLibrary="top.yukonga.miuix.kmp.blur" />
 
@@ -12,6 +12,10 @@
 
     <queries>
         <package android:name="com.papegames.lysk.cn"/>
+        <package android:name="com.papegames.lysk.tw"/>
+        <package android:name="com.papegames.lysk.jp"/>
+        <package android:name="com.papegames.lysk.en"/>
+        <package android:name="com.papegames.lysk.kr"/>
     </queries>
 
     <application

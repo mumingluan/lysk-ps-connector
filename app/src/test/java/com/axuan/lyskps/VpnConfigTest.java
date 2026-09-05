@@ -40,4 +40,27 @@ public final class VpnConfigTest {
         try { config("papegames.com\nre:["); fail("invalid regex accepted"); }
         catch(IllegalArgumentException expected) { assertTrue(expected.getMessage().contains("正则域名无效")); }
     }
+
+    @Test public void internationalResourcesBypassWhileLoginAndGateAreIncluded() {
+        VpnConfig c=config(VpnConfig.DEFAULT_DOMAINS);
+        for(String region:new String[]{"cn","tw","jp","en","kr","sg"}) {
+            for(String suffix:new String[]{"","-backup"}) {
+                assertEquals(VpnConfig.DOMAIN_EXCLUDE,c.domainDecision("x3"+region+"-client-v8bci8bzmq8vqa"+suffix+".infoldgames.com"));
+            }
+        }
+        assertEquals(VpnConfig.DOMAIN_INCLUDE,c.domainDecision("api.infoldgames.com:443"));
+        assertEquals(VpnConfig.DOMAIN_INCLUDE,c.domainDecision("risk-api.infoldgames.com"));
+        assertEquals(VpnConfig.DOMAIN_INCLUDE,c.domainDecision("x3asia-gatesvr.infoldgames.com"));
+        assertEquals(VpnConfig.DOMAIN_NONE,c.domainDecision("api.infoldgames.com.evil.test"));
+        assertEquals(VpnConfig.DOMAIN_INCLUDE,c.domainDecision("other-client.infoldgames.com"));
+    }
+    @Test public void migratesPreviousDefaultsAndKeepsCustomScopes() {
+        assertEquals(VpnConfig.DEFAULT_DOMAINS,VpnConfig.migrateDomains("papegames.com\npapegames.cn\n!re:^x3cn-client-[a-z0-9]+\\.papegames\\.com$"));
+        assertEquals(VpnConfig.DEFAULT_PACKAGES,VpnConfig.migratePackages("com.papegames.lysk.cn"));
+        assertEquals("*",VpnConfig.migratePackages("*"));
+        assertEquals("custom.package",VpnConfig.migratePackages("custom.package"));
+        VpnConfig c=VpnConfig.fromInput(VpnConfig.MODE_PROXY,"http://127.0.0.1:8888","http://127.0.0.1:8088",true,VpnConfig.DEFAULT_DOMAINS,VpnConfig.DEFAULT_PACKAGES);
+        assertEquals(5,c.packages.size());
+        for(String region:new String[]{"cn","tw","jp","en","kr"})assertTrue(c.packages.contains("com.papegames.lysk."+region));
+    }
 }

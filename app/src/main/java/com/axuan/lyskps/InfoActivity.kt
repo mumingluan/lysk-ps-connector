@@ -77,6 +77,8 @@ class InfoActivity : ComponentActivity() {
     private val shizukuUidState = mutableStateOf<Int?>(null)
     private val isRsaPatchedState = mutableStateOf(false)
     private val isRsaStatusCheckingState = mutableStateOf(false)
+    private val gameTargetState = mutableStateOf("com.papegames.lysk.cn")
+    private var pendingTarget: Context? = null
     private val certStatusState = mutableStateOf("正在读取 TLS 凭据…")
     private val logSnapshotState = mutableStateOf("")
 
@@ -110,6 +112,7 @@ class InfoActivity : ComponentActivity() {
                     }
                 } catch (t: Throwable) {
                     runOnUiThread {
+                        pendingTarget = null
                         val detail = "NLS ZIP 解析失败：" + (t.message ?: t.javaClass.simpleName)
                         VpnLog.i("ERROR", detail)
                         showToast(detail)
@@ -117,6 +120,7 @@ class InfoActivity : ComponentActivity() {
                 }
             }.start()
         } else {
+            pendingTarget = null
             VpnLog.i("NLS", "已取消选择 Solver NLS ZIP")
         }
     }
@@ -238,10 +242,10 @@ class InfoActivity : ComponentActivity() {
         VpnLog.init(this)
 
         setContent {
-            val isDark = isSystemInDarkTheme()
+            val isDark = true
             val themeController = remember(isDark) {
                 ThemeController(
-                    ColorSchemeMode.System,
+                    ColorSchemeMode.Dark,
                     keyColor = null,
                     isDark = isDark,
                     paletteStyle = ThemePaletteStyle.TonalSpot,
@@ -259,7 +263,7 @@ class InfoActivity : ComponentActivity() {
                         android.graphics.Color.TRANSPARENT
                     ) { isDark }
                 )
-                window.isNavigationBarContrastEnforced = false
+                if (android.os.Build.VERSION.SDK_INT >= 29) window.isNavigationBarContrastEnforced = false
                 onDispose { }
             }
             MiuixTheme(controller = themeController) {
@@ -273,6 +277,9 @@ class InfoActivity : ComponentActivity() {
                     certStatus = certStatusState.value,
                     logSnapshot = logSnapshotState.value,
                     initialConfig = VpnConfig.load(vpnPrefs),
+                    gameTarget = gameTargetState.value,
+                    onSelectGame = { selectGameTarget(it) },
+                    installedGames = GameTarget.PACKAGES.filter { pkg -> try { packageManager.getApplicationInfo(pkg, 0); true } catch (_: Exception) { false } },
                     onToggleVpn = { saveAndToggleVpn(it) },
                     onToggleProxy = { saveAndToggleProxy(it) },
                     onLaunchGame = { launchGame() },
@@ -292,6 +299,7 @@ class InfoActivity : ComponentActivity() {
             }
         }
 
+        gameTargetState.value = GameTarget.selected(this)
         refreshCertStatus()
     }
 
@@ -353,8 +361,8 @@ class InfoActivity : ComponentActivity() {
         }
         try {
             Config.load(getSharedPreferences(Config.PREFS, Context.MODE_PRIVATE))
-            val off2048 = Config.parseHex(Config.off2048)
-            val off1024 = Config.parseHex(Config.off1024)
+            val off2048 = 0L
+            val off1024 = 0L
             rsaStatusCheckInFlight = true
             isRsaStatusCheckingState.value = true
             OfficialRsaRestorer.checkPatched(
@@ -433,9 +441,18 @@ class InfoActivity : ComponentActivity() {
         }
     }
 
+    private fun selectGameTarget(pkg: String) {
+        if (pendingShizukuMode != 0 || OfficialRsaRestorer.isBusy() || NlsResourceManager.isBusy()) { showToast("请等待当前文件操作完成"); return }
+        GameTarget.validate(pkg)
+        vpnPrefs.edit().putString("game_package", pkg).apply()
+        gameTargetState.value = pkg
+        isRsaPatchedState.value = false
+        refreshRsaPatchStatus()
+    }
+
     private fun launchGame() {
         try {
-            val launch = packageManager.getLaunchIntentForPackage("com.papegames.lysk.cn")
+            val launch = packageManager.getLaunchIntentForPackage(GameTarget.selected(this))
             if (launch == null) {
                 showToast("未安装恋与深空客户端")
                 return
@@ -448,6 +465,8 @@ class InfoActivity : ComponentActivity() {
     }
 
     private fun requestShizukuOperation(mode: Int) {
+        if (OfficialRsaRestorer.isBusy() || NlsResourceManager.isBusy()) { showToast("请等待当前文件操作完成"); return }
+        if (mode != NlsResourceManager.MODE_INSTALL || pendingTarget == null) pendingTarget = GameTarget.freeze(this)
         val action = shizukuActionName(mode)
         VpnLog.i("ACTION", "请求执行：$action")
         try {
@@ -507,6 +526,8 @@ class InfoActivity : ComponentActivity() {
         mode == OfficialRsaRestorer.MODE_DELETE_IL2CPP
 
     private fun runShizukuOperation(mode: Int) {
+        val targetContext = pendingTarget ?: GameTarget.freeze(this)
+        pendingTarget = null
         if (requiresRootShizuku(mode)) {
             val hasRoot = try { Shizuku.pingBinder() && Shizuku.getUid() == 0 }
             catch (ignored: Throwable) { false }
@@ -526,7 +547,7 @@ class InfoActivity : ComponentActivity() {
                     return
                 }
                 showToast("正在备份并安装 NLS 资源…")
-                NlsResourceManager.install(this, prepared) { ok, detail ->
+                NlsResourceManager.install(targetContext, prepared) { ok, detail ->
                     runOnUiThread {
                         if (ok) pendingNlsPrepared = null
                         showToast((if (ok) "完成：" else "失败：") + detail)
@@ -535,24 +556,24 @@ class InfoActivity : ComponentActivity() {
             }
             NlsResourceManager.MODE_RESTORE_BACKUP -> {
                 showToast("正在从私有备份还原 NLS…")
-                NlsResourceManager.restoreBackup(this) { ok, detail ->
+                NlsResourceManager.restoreBackup(targetContext) { ok, detail ->
                     runOnUiThread { showToast((if (ok) "完成：" else "失败：") + detail) }
                 }
             }
             NlsResourceManager.MODE_DELETE -> {
                 showToast("正在删除已安装的 NLS 资源…")
-                NlsResourceManager.deleteInstalled(this) { ok, detail ->
+                NlsResourceManager.deleteInstalled(targetContext) { ok, detail ->
                     runOnUiThread { showToast((if (ok) "完成：" else "失败：") + detail) }
                 }
             }
             OfficialRsaRestorer.MODE_APPLY_PRIVATE -> {
                 try {
                     Config.load(getSharedPreferences(Config.PREFS, Context.MODE_PRIVATE))
-                    val off2048 = Config.parseHex(Config.off2048)
-                    val off1024 = Config.parseHex(Config.off1024)
+                    val off2048 = 0L
+                    val off1024 = 0L
                     showToast("正在通过 Shizuku 立即补丁 RSA…")
                     OfficialRsaRestorer.patch(
-                        this, off2048, off1024,
+                        targetContext, off2048, off1024,
                         Config.replace2048Bytes(), Config.replace1024Bytes()
                     ) { ok, detail ->
                         runOnUiThread {
@@ -569,7 +590,7 @@ class InfoActivity : ComponentActivity() {
             OfficialRsaRestorer.MODE_RESTORE_BACKUP -> {
                 LyskVpnService.stop(this)
                 showToast("正在从自动备份还原 RSA…")
-                OfficialRsaRestorer.restoreBackup(this) { ok, detail ->
+                OfficialRsaRestorer.restoreBackup(targetContext) { ok, detail ->
                     runOnUiThread {
                         showToast((if (ok) "完成：" else "失败：") + detail)
                         refreshRsaPatchStatus()
@@ -584,7 +605,7 @@ class InfoActivity : ComponentActivity() {
                     else -> "恢复官方公钥"
                 }
                 showToast("正在通过 Shizuku $action…")
-                OfficialRsaRestorer.restore(this, mode) { ok, detail ->
+                OfficialRsaRestorer.restore(targetContext, mode) { ok, detail ->
                     runOnUiThread {
                         showToast((if (ok) "完成：" else "失败：") + detail)
                         refreshRsaPatchStatus()
@@ -595,6 +616,7 @@ class InfoActivity : ComponentActivity() {
     }
 
     private fun selectNlsZip() {
+        pendingTarget = GameTarget.freeze(this)
         VpnLog.i("NLS", "打开文件选择器，等待 Solver NLS ZIP")
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
@@ -696,6 +718,9 @@ fun MainScreen(
     certStatus: String,
     logSnapshot: String,
     initialConfig: VpnConfig,
+    gameTarget: String,
+    onSelectGame: (String) -> Unit,
+    installedGames: List<String>,
     onToggleVpn: (VpnConfig) -> Unit,
     onToggleProxy: (VpnConfig) -> Unit,
     onLaunchGame: () -> Unit,
@@ -718,11 +743,7 @@ fun MainScreen(
     val logsPageScrollState = rememberScrollState()
     val logViewportScrollState = rememberScrollState()
     val scrollBehavior = MiuixScrollBehavior()
-    val surfaceColor = lerp(
-        MiuixTheme.colorScheme.surface,
-        MiuixTheme.colorScheme.surfaceContainer,
-        0.45f
-    )
+    val surfaceColor = Color.Black
     val backdrop = rememberLayerBackdrop {
         drawRect(surfaceColor)
         drawContent()
@@ -782,8 +803,12 @@ fun MainScreen(
     }
 
     Scaffold(
+        containerColor = Color.Black,
         topBar = {
             TopAppBar(
+                color = Color.Black,
+                titleColor = Color.White,
+                largeTitleColor = Color.White,
                 title = if (selectedTab == MainTab.HOME) "LYSK PS Connector" else selectedTab.label,
                 actions = {
                     Text(
@@ -837,6 +862,30 @@ fun MainScreen(
                         tlsWrapperActive = redirectTlsWrapper && isRedirect,
                         onToggle = { onToggleVpn(currentConfig()) }
                     )
+
+                    Card(modifier = Modifier.fillMaxWidth(), insideMargin = PaddingValues(0.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(start = 16.dp, end = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "操作客户端：$gameTarget",
+                                modifier = Modifier.weight(1f),
+                                fontSize = 13.sp,
+                                color = MiuixTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                            )
+                            Button(
+                                onClick = { activeDialog = AppDialog.GAME_TARGET },
+                                modifier = Modifier.height(40.dp),
+                                colors = ButtonDefaults.buttonColors(),
+                                insideMargin = PaddingValues(horizontal = 14.dp)
+                            ) { Text("更改", fontSize = 13.sp, maxLines = 1) }
+                        }
+                    }
 
                     HomeActionCard(
                         title = "RSA 公钥补丁",
@@ -1187,11 +1236,15 @@ fun MainScreen(
         onImportRsaPem = onImportRsaPem,
         onRestoreBuiltInRsaPem = onRestoreBuiltInRsaPem,
         onRestoreNls = onRestoreNls,
-        onRegenerateCert = onRegenerateCert
+        onRegenerateCert = onRegenerateCert,
+        installedGames = installedGames,
+        gameTarget = gameTarget,
+        onSelectGame = onSelectGame
     )
 }
 
 private enum class AppDialog {
+    GAME_TARGET,
     RSA_OPTIONS,
     RSA_DELETE_CONFIRM,
     RSA_APK_RESTORE_CONFIRM,
@@ -1212,9 +1265,13 @@ private fun AppDialogHost(
     onImportRsaPem: (Int) -> Unit,
     onRestoreBuiltInRsaPem: () -> Unit,
     onRestoreNls: (Int) -> Unit,
-    onRegenerateCert: () -> Unit
+    onRegenerateCert: () -> Unit,
+    installedGames: List<String>,
+    gameTarget: String,
+    onSelectGame: (String) -> Unit
 ) {
     val title = when (activeDialog) {
+        AppDialog.GAME_TARGET -> "更改操作客户端"
         AppDialog.RSA_OPTIONS -> "恢复 RSA"
         AppDialog.RSA_DELETE_CONFIRM -> "重建 il2cpp？"
         AppDialog.RSA_APK_RESTORE_CONFIRM -> "从游戏 APK 重写？"
@@ -1226,6 +1283,7 @@ private fun AppDialogHost(
         null -> null
     }
     val summary = when (activeDialog) {
+        AppDialog.GAME_TARGET -> if (installedGames.isEmpty()) "未找到已安装的客户端" else "选择 RSA、NLS 和启动操作使用的客户端"
         AppDialog.RSA_OPTIONS -> "通过 Shizuku 选择恢复方式"
         AppDialog.RSA_DELETE_CONFIRM -> if (isShizukuRoot) {
             "将停止恋与深空并删除 files/il2cpp 目录，游戏下次启动时会自动重建。"
@@ -1249,6 +1307,17 @@ private fun AppDialogHost(
         onDismissRequest = onDismiss
     ) {
         when (activeDialog) {
+            AppDialog.GAME_TARGET -> {
+                Card(modifier = Modifier.fillMaxWidth(), insideMargin = PaddingValues(0.dp)) {
+                    installedGames.forEach { pkg ->
+                        BasicComponent(
+                            title = GameTarget.LABELS[GameTarget.PACKAGES.indexOf(pkg)] + if (pkg == gameTarget) " · 当前" else "",
+                            summary = pkg,
+                            onClick = { onDismiss(); onSelectGame(pkg) }
+                        )
+                    }
+                }
+            }
             AppDialog.RSA_OPTIONS -> {
                 Card(
                     modifier = Modifier.fillMaxWidth(),

@@ -13,5 +13,9 @@ interface IShizukuRsaService {
         String zipName, String nxName) = 5;
     String deleteNls(String zipName, String nxName) = 6;
     String restoreMetadataFromApk() = 7;
+    void selectTarget(String packageName) = 8;
+    long[] locateRsa() = 9;
+    String metadataFingerprint() = 10;
+    String validateNls(in ParcelFileDescriptor sourceNx, String nxName) = 11;
     void destroy() = 16777114;
 }
