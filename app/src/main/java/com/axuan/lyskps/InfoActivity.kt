@@ -86,6 +86,7 @@ class InfoActivity : ComponentActivity() {
     private var pendingNlsPrepared: SolverNlsArchive.Prepared? = null
     private var rsaStatusCheckInFlight = false
     private var rsaStatusRefreshPending = false
+    private var rsaStatusRevision = 0L
     private var wasShizukuConnected = false
 
     // Activity Result Launchers
@@ -363,18 +364,23 @@ class InfoActivity : ComponentActivity() {
             Config.load(getSharedPreferences(Config.PREFS, Context.MODE_PRIVATE))
             val off2048 = 0L
             val off1024 = 0L
+            val revision = rsaStatusRevision
+            val target = GameTarget.selected(this)
             rsaStatusCheckInFlight = true
             isRsaStatusCheckingState.value = true
             OfficialRsaRestorer.checkPatched(
                 this, off2048, off1024,
                 Config.replace2048Bytes(), Config.replace1024Bytes()
-            ) { patched, _ ->
+            ) { patched, detail ->
                 runOnUiThread {
                     rsaStatusCheckInFlight = false
                     isRsaStatusCheckingState.value = false
-                    isRsaPatchedState.value = try {
-                        Shizuku.pingBinder() && patched
-                    } catch (ignored: Throwable) { false }
+                    if (revision == rsaStatusRevision && target == GameTarget.selected(this)
+                        && detail != "busy") {
+                        isRsaPatchedState.value = try {
+                            Shizuku.pingBinder() && patched
+                        } catch (ignored: Throwable) { false }
+                    }
                     if (rsaStatusRefreshPending) {
                         rsaStatusRefreshPending = false
                         refreshRsaPatchStatus()
@@ -578,7 +584,16 @@ class InfoActivity : ComponentActivity() {
                     ) { ok, detail ->
                         runOnUiThread {
                             showToast((if (ok) "完成：" else "失败：") + detail)
-                            refreshRsaPatchStatus()
+                            if (ok && GameTarget.selected(targetContext) == GameTarget.selected(this)) {
+                                // patch() has already read both key blocks back successfully.
+                                // Invalidate checks started before this write completed.
+                                rsaStatusRevision++
+                                rsaStatusRefreshPending = false
+                                isRsaStatusCheckingState.value = false
+                                isRsaPatchedState.value = true
+                            } else {
+                                refreshRsaPatchStatus()
+                            }
                         }
                     }
                 } catch (e: Throwable) {

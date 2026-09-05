@@ -103,10 +103,13 @@ public final class OfficialRsaRestorer {
 
             Shizuku.UserServiceArgs args = new Shizuku.UserServiceArgs(
                     new ComponentName(app.getPackageName(), ShizukuRsaService.class.getName()))
+                    // A process suffix does not identify a Shizuku service binding.
+                    // Each operation owns its service so teardown cannot affect a new check.
+                    .tag("lyskps_" + java.util.UUID.randomUUID())
                     .daemon(false)
                     .processNameSuffix((mode==MODE_CHECK?"rsa_check_":"rsa_file_")+GameTarget.selected(app).substring(GameTarget.selected(app).lastIndexOf('.')+1))
                     .debuggable(false)
-                    .version(7);
+                    .version(8);
             Operation operation = new Operation(app, args, mode, off2048, off1024,
                     replacement2048, replacement1024, callback);
             ACTIVE_OPERATIONS.add(operation);
